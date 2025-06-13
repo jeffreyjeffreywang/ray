@@ -166,6 +166,14 @@ class CPUCommunicator(Communicator):
     ):
         raise NotImplementedError
 
+    def reduce(
+        self,
+        send_buf: "torch.Tensor",
+        recv_buf: "torch.Tensor",
+        root: int,
+    ):
+        raise NotImplementedError
+
     def destroy(self) -> None:
         for barrier in self.barriers:
             ray.kill(barrier)

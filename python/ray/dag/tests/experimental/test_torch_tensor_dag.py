@@ -556,6 +556,16 @@ def test_torch_tensor_custom_comm(ray_start_regular):
             self._inner.broadcast(send_buf, recv_buf, root_rank)
             recv_buf += 1
 
+        def reduce(
+            self,
+            send_buf: "torch.Tensor",
+            recv_buf: "torch.Tensor",
+            root_rank: int,
+            op: ReduceOp = ReduceOp.SUM,
+        ) -> None:
+            self._inner.reduce(send_buf, recv_buf, root_rank, op)
+            recv_buf += 1
+
         @property
         def recv_stream(self):
             return self._inner.recv_stream
@@ -701,6 +711,15 @@ def test_torch_tensor_custom_comm_inited(ray_start_regular):
             send_buf: "torch.Tensor",
             recv_buf: "torch.Tensor",
             root_rank: int,
+        ) -> None:
+            raise NotImplementedError
+
+        def reduce(
+            self,
+            send_buf: "torch.Tensor",
+            recv_buf: "torch.Tensor",
+            root_rank: int,
+            op: ReduceOp = ReduceOp.SUM,
         ) -> None:
             raise NotImplementedError
 
@@ -853,6 +872,15 @@ def test_torch_tensor_default_comm(ray_start_regular, transports):
             send_buf: "torch.Tensor",
             recv_buf: "torch.Tensor",
             root_rank: int,
+        ) -> None:
+            raise NotImplementedError
+
+        def reduce(
+            self,
+            send_buf: "torch.Tensor",
+            recv_buf: "torch.Tensor",
+            root_rank: int,
+            op: ReduceOp = ReduceOp.SUM,
         ) -> None:
             raise NotImplementedError
 
@@ -1018,6 +1046,15 @@ def test_torch_tensor_invalid_custom_comm(ray_start_regular):
             send_buf: "torch.Tensor",
             recv_buf: "torch.Tensor",
             root_rank: int,
+        ) -> None:
+            raise NotImplementedError
+
+        def reduce(
+            self,
+            send_buf: "torch.Tensor",
+            recv_buf: "torch.Tensor",
+            root_rank: int,
+            op: ReduceOp = ReduceOp.SUM,
         ) -> None:
             raise NotImplementedError
 
@@ -2029,6 +2066,48 @@ def test_torch_tensor_nccl_broadcast_no_root_node(ray_start_regular):
             ]
 
             collective.broadcast.bind(computes)
+
+
+@pytest.mark.parametrize("ray_start_regular", [{"num_gpus": 4}], indirect=True)
+def test_torch_tensor_nccl_reduce_wrong_root_node(ray_start_regular):
+    actor_cls = TorchTensorWorker.options(num_cpus=0, num_gpus=1)
+
+    num_workers = 2
+    root_worker = actor_cls.remote()
+    workers = [actor_cls.remote() for _ in range(num_workers)]
+
+    with pytest.raises(
+        ValueError,
+        match="Expected the root node to be an input node",
+    ):
+        with InputNode() as inp:
+            root_compute = root_worker.compute_with_tuple_args.bind(inp, 0)
+            computes = [
+                worker.compute_with_tuple_args.bind(inp, i)
+                for i, worker in enumerate(workers)
+            ]
+
+            collective.reduce.bind(root_compute, computes, op=ReduceOp.SUM)
+
+
+@pytest.mark.parametrize("ray_start_regular", [{"num_gpus": 4}], indirect=True)
+def test_torch_tensor_nccl_reduce_no_root_node(ray_start_regular):
+    actor_cls = TorchTensorWorker.options(num_cpus=0, num_gpus=1)
+
+    num_workers = 2
+    workers = [actor_cls.remote() for _ in range(num_workers)]
+
+    with pytest.raises(
+        TypeError,
+        match="missing 1 required positional argument",
+    ):
+        with InputNode() as inp:
+            computes = [
+                worker.compute_with_tuple_args.bind(inp, i)
+                for i, worker in enumerate(workers)
+            ]
+
+            collective.reduce.bind(computes, op=ReduceOp.SUM)
 
 
 if __name__ == "__main__":

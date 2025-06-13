@@ -79,6 +79,14 @@ class AbstractNcclGroup(Communicator):
     ) -> None:
         raise NotImplementedError
 
+    def reduce(
+        self,
+        send_buf: "torch.Tensor",
+        recv_buf: "torch.Tensor",
+        root: int,
+    ) -> None:
+        raise NotImplementedError
+
     @property
     def recv_stream(self):
         return None
