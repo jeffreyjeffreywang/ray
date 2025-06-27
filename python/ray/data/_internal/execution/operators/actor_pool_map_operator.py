@@ -67,6 +67,7 @@ class ActorPoolMapOperator(MapOperator):
         supports_fusion: bool = True,
         ray_remote_args_fn: Optional[Callable[[], Dict[str, Any]]] = None,
         ray_remote_args: Optional[Dict[str, Any]] = None,
+        shared_key: Optional[str] = None,
     ):
         """Create an ActorPoolMapOperator instance.
 
@@ -91,6 +92,7 @@ class ActorPoolMapOperator(MapOperator):
                 advanced, experimental feature.
             ray_remote_args: Customize the ray remote args for this op's tasks.
                 See :func:`ray.remote` for details.
+            shared_key: Optional key for sharing this operator across executions.
         """
         super().__init__(
             map_transformer,
@@ -102,6 +104,7 @@ class ActorPoolMapOperator(MapOperator):
             supports_fusion,
             ray_remote_args_fn,
             ray_remote_args,
+            shared_key,
         )
         self._ray_actor_task_remote_args = {}
         actor_task_errors = self.data_context.actor_task_retry_on_errors
@@ -872,8 +875,8 @@ class _ActorPool(AutoscalingActorPool):
     def get_logical_ids(self) -> List[str]:
         """Get the logical IDs for pending and running actors in the actor pool.
 
-        We can’t use Ray Core actor IDs because we need to identify actors by labels,
-        but labels must be set before creation, and actor IDs aren’t available until
+        We can't use Ray Core actor IDs because we need to identify actors by labels,
+        but labels must be set before creation, and actor IDs aren't available until
         after.
         """
         return list(self._actor_to_logical_id.values())
