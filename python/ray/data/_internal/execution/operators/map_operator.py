@@ -62,59 +62,6 @@ from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 logger = logging.getLogger(__name__)
 
 
-# Global registry for shared physical operators
-_SHARED_OPERATORS: Dict[str, "MapOperator"] = {}
-_SHARED_OPERATORS_USAGE_COUNT: Dict[str, int] = {}
-
-
-def register_shared_operator(shared_key: str, operator: "MapOperator") -> None:
-    """Register a physical operator for sharing across executions."""
-    global _SHARED_OPERATORS, _SHARED_OPERATORS_USAGE_COUNT
-    
-    if shared_key not in _SHARED_OPERATORS:
-        logger.info(f"Registering shared operator for key: {shared_key}")
-        _SHARED_OPERATORS[shared_key] = operator
-        _SHARED_OPERATORS_USAGE_COUNT[shared_key] = 1
-    else:
-        _SHARED_OPERATORS_USAGE_COUNT[shared_key] += 1
-        logger.info(f"Incrementing usage count to {_SHARED_OPERATORS_USAGE_COUNT[shared_key]} for shared operator: {shared_key}")
-
-
-def get_shared_operator(shared_key: str) -> Optional["MapOperator"]:
-    # breakpoint()
-    """Get a shared operator if available."""
-    global _SHARED_OPERATORS
-    
-    if shared_key in _SHARED_OPERATORS:
-        operator = _SHARED_OPERATORS[shared_key]
-        logger.info(f"Retrieved shared operator for key: {shared_key}")
-        return operator
-    return None
-
-
-def release_shared_operator(shared_key: str) -> None:
-    """Release a shared operator when no longer needed."""
-    global _SHARED_OPERATORS, _SHARED_OPERATORS_USAGE_COUNT
-    
-    if shared_key not in _SHARED_OPERATORS_USAGE_COUNT:
-        return
-    
-    _SHARED_OPERATORS_USAGE_COUNT[shared_key] -= 1
-    logger.info(f"Decremented usage count to {_SHARED_OPERATORS_USAGE_COUNT[shared_key]} for shared operator: {shared_key}")
-    
-    if _SHARED_OPERATORS_USAGE_COUNT[shared_key] <= 0:
-        logger.info(f"Cleaning up shared operator for key: {shared_key}")
-        operator = _SHARED_OPERATORS.get(shared_key)
-        if operator and hasattr(operator, 'shutdown'):
-            try:
-                operator.shutdown()
-            except Exception as e:
-                logger.warning(f"Failed to shutdown shared operator {shared_key}: {e}")
-        
-        _SHARED_OPERATORS.pop(shared_key, None)
-        _SHARED_OPERATORS_USAGE_COUNT.pop(shared_key, None)
-
-
 class MapOperator(OneToOneOperator, InternalQueueOperatorMixin, ABC):
     """A streaming operator that maps input bundles 1:1 to output bundles.
 
@@ -151,7 +98,6 @@ class MapOperator(OneToOneOperator, InternalQueueOperatorMixin, ABC):
         self._ray_remote_args_factory_actor_locality = None
         self._remote_args_for_metrics = copy.deepcopy(self._ray_remote_args)
         self._shared_key = shared_key
-
         # Bundles block references up to the min_rows_per_bundle target.
         self._block_ref_bundler = _BlockRefBundler(min_rows_per_bundle)
 
@@ -256,26 +202,24 @@ class MapOperator(OneToOneOperator, InternalQueueOperatorMixin, ABC):
                 advanced, experimental feature.
             ray_remote_args: Customize the :func:`ray.remote` args for this op's tasks.
             shared_key: Optional key for sharing this operator across executions.
+                Note: Operator sharing is only supported for ActorPoolStrategy.
         """
-        # NEW: Check for existing shared operator
-        if shared_key is not None:
-            existing_operator = get_shared_operator(shared_key)
-            if existing_operator is not None:
-                logger.info(f"Reusing existing shared operator for key: {shared_key}")
-                register_shared_operator(shared_key, existing_operator)  # Increment usage
-                return existing_operator
-
-        
         if compute_strategy is None:
             compute_strategy = TaskPoolStrategy()
 
         # Create new operator based on compute strategy
         if isinstance(compute_strategy, TaskPoolStrategy):
+            if shared_key is not None:
+                logger.warning(
+                    "shared_key is not supported for TaskPoolStrategy and will be ignored. "
+                    "Operator sharing is only available for ActorPoolStrategy."
+                )
+
             from ray.data._internal.execution.operators.task_pool_map_operator import (
                 TaskPoolMapOperator,
             )
 
-            operator = TaskPoolMapOperator(
+            return TaskPoolMapOperator(
                 map_transformer,
                 input_op,
                 data_context,
@@ -286,17 +230,16 @@ class MapOperator(OneToOneOperator, InternalQueueOperatorMixin, ABC):
                 supports_fusion=supports_fusion,
                 ray_remote_args_fn=ray_remote_args_fn,
                 ray_remote_args=ray_remote_args,
-                shared_key=shared_key,  # Pass shared_key to constructor
             )
         elif isinstance(compute_strategy, ActorPoolStrategy):
             from ray.data._internal.execution.operators.actor_pool_map_operator import (
                 ActorPoolMapOperator,
             )
 
-            operator = ActorPoolMapOperator(
-                map_transformer,
-                input_op,
-                data_context,
+            return ActorPoolMapOperator.create(
+                map_transformer=map_transformer,
+                input_op=input_op,
+                data_context=data_context,
                 target_max_block_size=target_max_block_size,
                 compute_strategy=compute_strategy,
                 name=name,
@@ -304,15 +247,10 @@ class MapOperator(OneToOneOperator, InternalQueueOperatorMixin, ABC):
                 supports_fusion=supports_fusion,
                 ray_remote_args_fn=ray_remote_args_fn,
                 ray_remote_args=ray_remote_args,
-                shared_key=shared_key,  # Pass shared_key to constructor
+                shared_key=shared_key,
             )
         else:
             raise ValueError(f"Unsupported execution strategy {compute_strategy}")
-
-        if shared_key is not None:
-            register_shared_operator(shared_key, operator)
-        
-        return operator
 
     def start(self, options: "ExecutionOptions"):
         super().start(options)
@@ -595,11 +533,6 @@ class MapOperator(OneToOneOperator, InternalQueueOperatorMixin, ABC):
         # 2. The number of active tasks in the progress bar will be more accurate
         #   to reflect the actual data processing tasks.
         return len(self._data_tasks)
-
-    def __del__(self):
-        """Clean up shared operator when MapOperator is destroyed."""
-        if hasattr(self, '_shared_key') and self._shared_key is not None:
-            release_shared_operator(self._shared_key)
 
 
 def _map_task(
