@@ -680,13 +680,13 @@ class vLLMEngineStage(StatefulStage):
 
         map_batches_kwargs.update(ray_remote_args)
         return values
-    
+
     def __init__(self, *args, **kwargs):
         # Initialize normally first
         super().__init__(*args, **kwargs)
-        
+
         # Check if this stage should support sharing and propagate to the logical operator level
-        shared_key = getattr(self, '_shared_engine_key', None)
+        shared_key = getattr(self, "_shared_engine_key", None)
         if shared_key:
             print(f"vLLMEngineStage: Setting up sharing support for key: {shared_key}")
             # Store the shared key for later use during physical operator creation
@@ -699,14 +699,16 @@ class vLLMEngineStage(StatefulStage):
     ) -> Dict[str, Any]:
         """Override to inject shared engine key for logical operator creation."""
         kwargs = super().get_dataset_map_batches_kwargs(batch_size, data_column)
-        
+
         # Inject shared engine key if this stage supports sharing
-        shared_key = getattr(self, '_shared_engine_key', None)
+        shared_key = getattr(self, "_shared_engine_key", None)
         if shared_key:
-            print(f"vLLMEngineStage get_dataset_map_batches_kwargs: Injecting shared key: {shared_key}")
+            print(
+                f"vLLMEngineStage get_dataset_map_batches_kwargs: Injecting shared key: {shared_key}"
+            )
             # Use the native shared_key parameter in Ray Data
-            kwargs['shared_key'] = shared_key
-        
+            kwargs["shared_key"] = shared_key
+
         return kwargs
 
     def get_required_input_keys(self) -> Dict[str, str]:
@@ -730,44 +732,54 @@ class vLLMEngineStage(StatefulStage):
             "model set in the stage, then this is a LoRA request.",
         }
 
+
 def _create_shared_actor_wrapper(original_fn_class, shared_engine_key: str):
     """Create a wrapper that can handle shared actor pools."""
-    
+
     class SharedActorWrapper(original_fn_class):
         """Wrapper that uses shared actors when available."""
-        
+
         _shared_actors_setup = False
         _shared_actors = None
-        
+
         def __init__(self, *args, **kwargs):
             # Import here to avoid circular imports
-            from llm._internal.batch.processor.vllm_engine_proc import SharedvLLMStageManager
-            
+            from llm._internal.batch.processor.vllm_engine_proc import (
+                SharedvLLMStageManager,
+            )
+
             print(f"SharedActorWrapper init for key: {shared_engine_key}")
-            
+
             # Check if we have shared actors
             shared_pool = SharedvLLMStageManager.get_shared_actors(shared_engine_key)
-            
+
             if shared_pool is not None and not self._shared_actors_setup:
-                print(f"Found shared actors for key: {shared_engine_key}, skipping vLLM engine creation")
+                print(
+                    f"Found shared actors for key: {shared_engine_key}, skipping vLLM engine creation"
+                )
                 # Don't initialize the vLLM engine since we'll use shared actors
                 # Just call the base StatefulStageUDF init
                 from ray.llm._internal.batch.stages.base import StatefulStageUDF
+
                 StatefulStageUDF.__init__(self, *args, **kwargs)
                 self._shared_actors = shared_pool.actors
                 self._shared_actors_setup = True
             else:
-                print(f"No shared actors found for key: {shared_engine_key}, creating new vLLM engine")
+                print(
+                    f"No shared actors found for key: {shared_engine_key}, creating new vLLM engine"
+                )
                 # Normal initialization - this will create a new vLLM engine
                 super().__init__(*args, **kwargs)
-                
+
                 # Register the new actors for sharing after creation
-                if hasattr(self, 'llm'):
+                if hasattr(self, "llm"):
                     # In this implementation, we assume the llm engine has access to its actors
                     # This is a simplified approach - in reality you'd need to capture actors
                     # from the Ray Data actor pool during execution
-                    print(f"Registering new vLLM actors for sharing with key: {shared_engine_key}")
-        
+                    print(
+                        f"Registering new vLLM actors for sharing with key: {shared_engine_key}"
+                    )
+
         async def udf(self, batch):
             """Override UDF to use shared actors when available."""
             if self._shared_actors is not None:
@@ -779,5 +791,5 @@ def _create_shared_actor_wrapper(original_fn_class, shared_engine_key: str):
             else:
                 # Use the normal UDF processing
                 return super().udf(batch)
-    
+
     return SharedActorWrapper

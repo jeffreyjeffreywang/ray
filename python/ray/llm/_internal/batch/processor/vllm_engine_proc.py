@@ -40,10 +40,10 @@ DEFAULT_MODEL_ARCHITECTURE = "UNKNOWN_MODEL_ARCHITECTURE"
 
 class SharedvLLMStageManager:
     """Manager for shared vLLM stage configurations."""
-    
+
     _shared_stages: Dict[str, Any] = {}
     _usage_count: Dict[str, int] = {}
-    
+
     @classmethod
     def get_or_create_shared_stage(cls, engine_key: str, stage_factory_fn):
         """Get or create a shared stage."""
@@ -53,24 +53,28 @@ class SharedvLLMStageManager:
             cls._shared_stages[engine_key] = stage
             cls._usage_count[engine_key] = 0
         else:
-            print(f"SharedvLLMStageManager: Reusing existing stage for key: {engine_key}")
+            print(
+                f"SharedvLLMStageManager: Reusing existing stage for key: {engine_key}"
+            )
             stage = cls._shared_stages[engine_key]
-        
+
         cls._usage_count[engine_key] += 1
         return cls._shared_stages[engine_key]
-    
+
     @classmethod
     def release_shared_stage(cls, engine_key: str):
         """Release a shared stage."""
         if engine_key in cls._usage_count:
             cls._usage_count[engine_key] -= 1
-            
+
             if cls._usage_count[engine_key] <= 0:
-                print(f"SharedvLLMStageManager: Cleaning up stage for key: {engine_key}")
+                print(
+                    f"SharedvLLMStageManager: Cleaning up stage for key: {engine_key}"
+                )
                 if engine_key in cls._shared_stages:
                     del cls._shared_stages[engine_key]
                 del cls._usage_count[engine_key]
-    
+
     @classmethod
     def list_shared_stages(cls) -> Dict[str, Dict[str, Any]]:
         """List all shared stages."""
@@ -205,9 +209,11 @@ def build_vllm_engine_processor(
     # Determine if we should use stage sharing
     if config.reuse_engine and config.shared_engine_key:
         print(f"Attempting to reuse vLLM stage with key: {config.shared_engine_key}")
-        
+
         def stage_factory():
-            print(f"Creating new vLLMEngineStage for shared key: {config.shared_engine_key}")
+            print(
+                f"Creating new vLLMEngineStage for shared key: {config.shared_engine_key}"
+            )
             stage = vLLMEngineStage(
                 fn_constructor_kwargs=dict(
                     batch_size=config.batch_size,
@@ -243,11 +249,11 @@ def build_vllm_engine_processor(
             # NEW: Set the shared key on the stage so it can pass it to map_batches
             stage._shared_engine_key = config.shared_engine_key
             return stage
-        
+
         # Get or create the shared stage
         existing_stages = SharedvLLMStageManager.list_shared_stages()
         print(f"Existing shared stages: {list(existing_stages.keys())}")
-        
+
         vllm_stage = SharedvLLMStageManager.get_or_create_shared_stage(
             config.shared_engine_key, stage_factory
         )
