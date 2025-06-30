@@ -24,7 +24,8 @@ from ray.data._internal.execution.interfaces import (
     TaskContext,
 )
 from ray.data._internal.execution.interfaces.physical_operator import _ActorPoolInfo
-from ray.data._internal.execution.operators.map_operator import MapOperator, _map_task
+from ray.data._internal.execution.interfaces.op_runtime_metrics import OpRuntimeMetrics
+from ray.data._internal.execution.operators.map_operator import MapOperator, _map_task, _BlockRefBundler
 from ray.data._internal.execution.operators.map_transformer import MapTransformer
 from ray.data._internal.execution.util import locality_string
 from ray.data._internal.remote_fn import _add_system_error_to_retry_exceptions
@@ -183,9 +184,20 @@ class ActorPoolMapOperator(MapOperator):
         if shared_key is not None:
             existing_operator = _shared_operator_registry.get(shared_key)
             if existing_operator is not None:
-                logger.info(
-                    f"Reusing existing shared ActorPoolMapOperator for key: {shared_key}"
-                )
+                # Clean up old input dependency connection
+                if existing_operator._input_dependencies:
+                    old_input_op = existing_operator._input_dependencies[0]
+                    if existing_operator in old_input_op._output_dependencies:
+                        old_input_op._output_dependencies.remove(existing_operator)
+                
+                # Update the input dependencies to connect to the new execution plan
+                existing_operator._input_dependencies = [input_op]
+                # Add this operator to the new input_op's output dependencies
+                input_op._output_dependencies.append(existing_operator)
+                
+                # Reset operator state for reuse
+                existing_operator._reset()
+                
                 return _shared_operator_registry.register(shared_key, existing_operator)
 
         operator = cls(
@@ -493,7 +505,11 @@ class ActorPoolMapOperator(MapOperator):
             )
 
     def _do_shutdown(self, force: bool = False):
-        if self._shared_key is not None:
+        # For shared operators, don't release from registry during normal shutdown
+        # They should persist for reuse across executions
+        if self._shared_key is not None and not force:
+            logger.info(f"Keeping shared operator {self._shared_key} alive for reuse")
+        elif self._shared_key is not None:
             _shared_operator_registry.release(self._shared_key)
 
         self._actor_pool.shutdown(force=force)
@@ -613,6 +629,13 @@ class ActorPoolMapOperator(MapOperator):
     def get_actor_info(self) -> _ActorPoolInfo:
         """Returns Actor counts for Alive, Restarting and Pending Actors."""
         return self._actor_pool.get_actor_info()
+
+    def _reset(self):
+        """Reset the operator's essential state for reuse across executions."""
+        self._inputs_complete = False
+        self._execution_finished = False
+        self._inputs_done = False
+        self._bundle_queue.clear()
 
 
 class _MapWorker:

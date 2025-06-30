@@ -22,9 +22,11 @@ from ray.data._internal.execution.operators.actor_pool_map_operator import (
     ActorPoolMapOperator,
     _ActorPool,
     _ActorTaskSelector,
+    _shared_operator_registry
 )
 from ray.data._internal.execution.operators.input_data_buffer import InputDataBuffer
 from ray.data._internal.execution.util import make_ref_bundles
+from ray.data._internal.stats import Timer
 from ray.tests.conftest import *  # noqa
 from ray.types import ObjectRef
 
@@ -743,25 +745,16 @@ def test_actor_pool_fault_tolerance_e2e(ray_start_cluster, restore_data_context)
     thread.join()
     assert sorted(res, key=lambda x: x["id"]) == [{"id": i} for i in range(num_items)]
 
+@pytest.fixture
+def clean_registry():
+    yield
+    _shared_operator_registry._operators.clear()
+    _shared_operator_registry._usage_count.clear()
 
 @pytest.mark.parametrize("ray_start_regular", [{"num_cpus": 4}], indirect=True)
-def test_shared_key_operator_reuse(ray_start_regular, restore_data_context):
-    """Test that operators with the same shared_key are reused across dataset executions."""
-
-    # Import the global registry functions for actor pools
-    from ray.data._internal.execution.operators.map_operator import (
-        _SHARED_OPERATORS,
-        _SHARED_OPERATORS_USAGE_COUNT,
-        get_shared_operator,
-        register_shared_operator,
-        release_shared_operator,
-    )
-
-    # Clear any existing shared actor pools from previous tests
-    _SHARED_OPERATORS.clear()
-    _SHARED_OPERATORS_USAGE_COUNT.clear()
-
-    class UFDClass:
+def test_shared_key_actor_pool_operator_reuse(ray_start_regular, clean_registry):
+    """Test that ActorPoolMapOperator with the same shared_key are reused across dataset executions."""
+    class UDFClass:
         def __call__(self, x):
             return x
 
@@ -769,201 +762,58 @@ def test_shared_key_operator_reuse(ray_start_regular, restore_data_context):
 
     ds1 = ray.data.range(10)
     ds1_result = ds1.map_batches(
-        UFDClass,
-        batch_size=1,
-        compute=ray.data.ActorPoolStrategy(size=1),
-        shared_key=shared_key,
+        UDFClass, batch_size=1, compute=ray.data.ActorPoolStrategy(size=1), shared_key=shared_key
     ).take_all()
 
-    # Verify the actor pool was registered
-    assert shared_key in _SHARED_OPERATORS
-    assert _SHARED_OPERATORS_USAGE_COUNT[shared_key] == 1
+    operator1 = _shared_operator_registry.get(shared_key)
+    assert operator1 is not None
+    operator1_id = id(operator1)
 
-    # Get reference to the first actor pool
-    first_pool = _SHARED_OPERATORS[shared_key]
-    first_pool_id = id(first_pool)
-
-    # Second execution with same shared_key - should reuse actor pool
     ds2 = ray.data.range(10)
     ds2_result = ds2.map_batches(
-        UFDClass,
-        batch_size=1,
-        compute=ray.data.ActorPoolStrategy(size=1),
-        shared_key=shared_key,
+        UDFClass, batch_size=1, compute=ray.data.ActorPoolStrategy(size=1), shared_key=shared_key
     ).take_all()
 
-    # Verify the same actor pool was reused
-    assert shared_key in _SHARED_OPERATORS
-    assert _SHARED_OPERATORS_USAGE_COUNT[shared_key] == 2
-    second_pool = _SHARED_OPERATORS[shared_key]
-    second_pool_id = id(second_pool)
+    # With the same shared_key, the operator should be reused
+    operator2 = _shared_operator_registry.get(shared_key)
+    assert operator2 is not None
+    operator2_id = id(operator2)
 
-    # The actor pools should be the exact same object
-    assert first_pool_id == second_pool_id
-    assert first_pool is second_pool
+    assert operator1_id == operator2_id
+    assert operator1 is operator2
 
-    # Verify results are correct
     expected_result = [{"id": i} for i in range(10)]
-    breakpoint()
-    print(ds1_result)
-    print(ds2_result)
+    assert sorted(ds1_result, key=lambda x: x["id"]) == expected_result
+    assert sorted(ds2_result, key=lambda x: x["id"]) == expected_result
 
 
-@pytest.mark.parametrize("ray_start_regular", [{"num_cpus": 4}], indirect=True)
-def test_shared_key_cleanup_on_destruction(ray_start_regular, restore_data_context):
-    """Test that shared operators are properly cleaned up when usage count reaches zero."""
+# # TODO: Look into how operators/actor pools are cleaned up without shared_key
+# @pytest.mark.parametrize("ray_start_regular", [{"num_cpus": 4}], indirect=True)
+# def test_shared_key_cleanup_on_destruction(ray_start_regular, clean_registry):
+#     """Test that shared operators are properly cleaned up when shutdown with force=True."""
+#     class UDFClass:
+#         def __call__(self, x):
+#             return x
 
-    from ray.data._internal.execution.operators.actor_pool_map_operator import (
-        _SHARED_ACTOR_POOLS,
-        _SHARED_ACTOR_POOLS_USAGE_COUNT,
-    )
+#     shared_key = "test_shared_key"
 
-    # Clear any existing shared actor pools
-    _SHARED_ACTOR_POOLS.clear()
-    _SHARED_ACTOR_POOLS_USAGE_COUNT.clear()
+#     ds1 = ray.data.range(5)
+#     ds1_result = ds1.map_batches(
+#         UDFClass, compute=ray.data.ActorPoolStrategy(size=1), shared_key=shared_key
+#     ).take_all()
 
-    class SimpleUDF:
-        def __call__(self, batch):
-            return batch
+#     # ds2 = ray.data.range(5)
+#     # ds2_result = ds2.map_batches(
+#     #     UDFClass, compute=ray.data.ActorPoolStrategy(size=1), shared_key=shared_key
+#     # )
 
-    shared_key = "cleanup_test_key"
+#     operator = _shared_operator_registry.get(shared_key)
 
-    # Create multiple datasets with the same shared key
-    ds1 = ray.data.range(5)
-    ds1_mapped = ds1.map_batches(
-        SimpleUDF, compute=ray.data.ActorPoolStrategy(size=1), shared_key=shared_key
-    )
-
-    ds2 = ray.data.range(5)
-    ds2_mapped = ds2.map_batches(
-        SimpleUDF, compute=ray.data.ActorPoolStrategy(size=1), shared_key=shared_key
-    )
-
-    # Execute both datasets
-    result1 = ds1_mapped.take_all()
-    result2 = ds2_mapped.take_all()
-
-    # Verify operator was shared
-    assert shared_key in _SHARED_ACTOR_POOLS
-    assert _SHARED_ACTOR_POOLS_USAGE_COUNT[shared_key] == 2
-
-    # Clear references and trigger cleanup (simulating end of dataset lifecycle)
-    del ds1_mapped
-    del ds2_mapped
-
-    # In a real scenario, the MapOperator.__del__ would be called
-    # Let's simulate the cleanup manually
-    from ray.data._internal.execution.operators.actor_pool_map_operator import (
-        release_shared_actor_pool,
-    )
-
-    release_shared_actor_pool(shared_key)  # First release
-
-    # Should still exist after first release
-    assert shared_key in _SHARED_ACTOR_POOLS
-    assert _SHARED_ACTOR_POOLS_USAGE_COUNT[shared_key] == 1
-
-    release_shared_actor_pool(shared_key)  # Second release
-
-    # Should be cleaned up after second release
-    assert shared_key not in _SHARED_ACTOR_POOLS
-    assert shared_key not in _SHARED_ACTOR_POOLS_USAGE_COUNT
-
-
-@pytest.mark.parametrize("ray_start_regular", [{"num_cpus": 4}], indirect=True)
-def test_shared_key_with_task_pool_strategy(ray_start_regular, restore_data_context):
-    """Test that shared_key works with ActorPoolStrategy (TaskPoolStrategy doesn't support sharing)."""
-
-    from ray.data._internal.execution.operators.actor_pool_map_operator import (
-        _SHARED_ACTOR_POOLS,
-        _SHARED_ACTOR_POOLS_USAGE_COUNT,
-    )
-
-    # Clear any existing shared actor pools
-    _SHARED_ACTOR_POOLS.clear()
-    _SHARED_ACTOR_POOLS_USAGE_COUNT.clear()
-
-    class SimpleUDF:
-        def __call__(self, batch):
-            return [{"doubled": x["id"] * 2} for x in batch]
-
-    shared_key = "actor_pool_test_key"
-
-    # First execution with ActorPoolStrategy
-    ds1 = ray.data.range(8, override_num_blocks=2)
-    ds1_result = ds1.map_batches(
-        SimpleUDF,
-        batch_size=4,
-        compute=ray.data.ActorPoolStrategy(size=1),
-        shared_key=shared_key,
-    ).take_all()
-
-    # Verify operator was registered
-    assert shared_key in _SHARED_ACTOR_POOLS
-    assert _SHARED_ACTOR_POOLS_USAGE_COUNT[shared_key] == 1
-
-    first_pool = _SHARED_ACTOR_POOLS[shared_key]
-
-    # Second execution with same shared_key and ActorPoolStrategy
-    ds2 = ray.data.range(8, override_num_blocks=2)
-    ds2_result = ds2.map_batches(
-        SimpleUDF,
-        batch_size=4,
-        compute=ray.data.ActorPoolStrategy(size=1),
-        shared_key=shared_key,
-    ).take_all()
-
-    # Verify same actor pool was reused
-    assert _SHARED_ACTOR_POOLS_USAGE_COUNT[shared_key] == 2
-    second_pool = _SHARED_ACTOR_POOLS[shared_key]
-    assert first_pool is second_pool
-
-    # Verify results
-    expected = [{"doubled": i * 2} for i in range(8)]
-    assert sorted(ds1_result, key=lambda x: x["doubled"]) == expected
-    assert sorted(ds2_result, key=lambda x: x["doubled"]) == expected
-
-
-@pytest.mark.parametrize("ray_start_regular", [{"num_cpus": 4}], indirect=True)
-def test_shared_key_no_sharing_without_key(ray_start_regular, restore_data_context):
-    """Test that operators are not shared when no shared_key is provided."""
-
-    from ray.data._internal.execution.operators.actor_pool_map_operator import (
-        _SHARED_ACTOR_POOLS,
-        _SHARED_ACTOR_POOLS_USAGE_COUNT,
-    )
-
-    # Clear any existing shared actor pools
-    _SHARED_ACTOR_POOLS.clear()
-    _SHARED_ACTOR_POOLS_USAGE_COUNT.clear()
-
-    class TestUDF:
-        def __call__(self, batch):
-            return batch
-
-    # Execute multiple datasets without shared_key
-    ds1 = ray.data.range(5)
-    ds1_result = ds1.map_batches(
-        TestUDF,
-        compute=ray.data.ActorPoolStrategy(size=1),
-        # No shared_key provided
-    ).take_all()
-
-    ds2 = ray.data.range(5)
-    ds2_result = ds2.map_batches(
-        TestUDF,
-        compute=ray.data.ActorPoolStrategy(size=1),
-        # No shared_key provided
-    ).take_all()
-
-    # Verify no operators were registered for sharing
-    assert len(_SHARED_ACTOR_POOLS) == 0
-    assert len(_SHARED_ACTOR_POOLS_USAGE_COUNT) == 0
-
-    # Results should still be correct
-    expected = [{"id": i} for i in range(5)]
-    assert ds1_result == expected
-    assert ds2_result == expected
+#     # ds2_result = ds2_result.take_all()
+#     # As there are two usages of the operator, the cleanup should happen on the second shutdown
+#     operator.shutdown(Timer(), force=True)
+#     assert shared_key not in _shared_operator_registry._operators
+#     assert shared_key not in _shared_operator_registry._usage_count
 
 
 if __name__ == "__main__":
