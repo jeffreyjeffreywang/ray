@@ -86,6 +86,43 @@ class SharedvLLMStageManager:
             for key, stage in cls._shared_stages.items()
         }
 
+    @classmethod
+    def shutdown_all(cls):
+        """Force shutdown of all shared vLLM stages and their actors.
+        
+        This should be invoked at interpreter exit to make sure that all
+        vLLM engines are terminated and their GPU memory is released.
+        """
+        stages_to_cleanup = list(cls._shared_stages.items())
+        cls._shared_stages.clear()
+        cls._usage_count.clear()
+        
+        for key, stage in stages_to_cleanup:
+            try:
+                print(f"SharedvLLMStageManager: Force shutting down stage {key}")
+                
+                # Force shutdown the underlying actor pool operators for this stage
+                if hasattr(stage, '_shared_engine_key'):
+                    shared_key = stage._shared_engine_key
+                    print(f"Forcing shutdown of actor pool for shared key: {shared_key}")
+                    
+                    # Import here to avoid circular imports
+                    from ray.data._internal.execution.operators.actor_pool_map_operator import (
+                        _shared_operator_registry,
+                    )
+                    
+                    # Force shutdown the shared operator (and its actors)
+                    if _shared_operator_registry.force_shutdown_shared_operator(shared_key):
+                        print(f"Successfully shut down actor pool for key: {shared_key}")
+                    else:
+                        print(f"No actor pool found for key: {shared_key}")
+                        
+                    # Clean up stage reference
+                    delattr(stage, '_shared_engine_key')
+                    
+            except Exception as e:
+                print(f"SharedvLLMStageManager: Failed to cleanup stage {key}: {e}")
+
 
 class vLLMEngineProcessorConfig(OfflineProcessorConfig):
     """The configuration for the vLLM engine processor."""
@@ -349,3 +386,17 @@ def build_vllm_engine_processor(
 
 
 ProcessorBuilder.register(vLLMEngineProcessorConfig, build_vllm_engine_processor)
+
+# Register an atexit hook to ensure all shared vLLM stages are cleaned up when the
+# Python process exits. This prevents lingering vLLM engines and GPU memory leaks.
+import atexit
+
+
+def _cleanup_shared_vllm_stages_on_exit():
+    try:
+        SharedvLLMStageManager.shutdown_all()
+    except Exception as e:  # pragma: no cover
+        print(f"vLLM stage cleanup failed during interpreter exit: {e}")
+
+
+atexit.register(_cleanup_shared_vllm_stages_on_exit)

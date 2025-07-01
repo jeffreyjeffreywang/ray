@@ -125,8 +125,66 @@ class SharedActorPoolOperatorRegistry:
 
             return False
 
+    # ---------------------------------------------------------------------
+    # Cleanup helpers
+    # ---------------------------------------------------------------------
+
+    def force_shutdown_shared_operator(self, shared_key: str) -> bool:
+        """Force shutdown a specific shared operator by key.
+        
+        Args:
+            shared_key: The key of the shared operator to shutdown.
+            
+        Returns:
+            True if the operator was found and shutdown, False otherwise.
+        """
+        with self._lock:
+            op = self._operators.pop(shared_key, None)
+            self._usage_count.pop(shared_key, None)
+            
+            if op:
+                try:
+                    from ray.data._internal.stats import Timer
+                    
+                    logger.info(f"Force shutting down shared operator: {shared_key}")
+                    op.shutdown(Timer(), force=True)
+                    return True
+                except Exception as e:
+                    logger.warning(f"Failed to shutdown operator {shared_key}: {e}")
+            
+            return False
+
+    def shutdown_all(self):
+        """Force shutdown of all shared operators and their actor pools.
+
+        This should be invoked at interpreter exit to make sure that all
+        Ray actors (e.g., vLLM engines) are terminated and their GPU memory is
+        released even when `reuse_actors=True`.
+        """
+        with self._lock:
+            keys = list(self._operators.keys())
+            for key in keys:
+                self.force_shutdown_shared_operator(key)
+
 
 _shared_operator_registry = SharedActorPoolOperatorRegistry()
+
+# Register an atexit hook to ensure all shared operators are cleaned up when the
+# Python process exits. This prevents lingering Ray actors when `reuse_actors`
+# is enabled.
+import atexit
+
+
+def _cleanup_shared_operators_on_exit():
+    try:
+        _shared_operator_registry.shutdown_all()
+    except Exception as e:  # pragma: no cover
+        logger.debug(
+            f"Shared operator cleanup failed during interpreter exit: {e}"
+        )
+
+
+atexit.register(_cleanup_shared_operators_on_exit)
 
 
 class ActorPoolMapOperator(MapOperator):
@@ -159,6 +217,7 @@ class ActorPoolMapOperator(MapOperator):
         ray_remote_args_fn: Optional[Callable[[], Dict[str, Any]]] = None,
         ray_remote_args: Optional[Dict[str, Any]] = None,
         shared_key: Optional[str] = None,
+        reuse_actors: Optional[bool] = None,
     ) -> "ActorPoolMapOperator":
         """Create an ActorPoolMapOperator with support for operator sharing.
 
@@ -177,10 +236,15 @@ class ActorPoolMapOperator(MapOperator):
                 passed to each map worker.
             ray_remote_args: Customize the ray remote args for this op's tasks.
             shared_key: Optional key for sharing this operator across executions.
+            reuse_actors: Whether to reuse existing actors instead of creating new ones.
 
         Returns:
             ActorPoolMapOperator instance (either new or shared).
         """
+        # Determine default for reuse_actors if not explicitly provided.
+        if reuse_actors is None:
+            reuse_actors = shared_key is not None
+
         if shared_key is not None:
             existing_operator = _shared_operator_registry.get(shared_key)
             if existing_operator is not None:
@@ -196,6 +260,7 @@ class ActorPoolMapOperator(MapOperator):
                 input_op._output_dependencies.append(existing_operator)
                 
                 # Reset operator state for reuse
+                existing_operator._reuse_actors = reuse_actors
                 existing_operator._reset()
                 
                 return _shared_operator_registry.register(shared_key, existing_operator)
@@ -212,6 +277,7 @@ class ActorPoolMapOperator(MapOperator):
             ray_remote_args_fn=ray_remote_args_fn,
             ray_remote_args=ray_remote_args,
             shared_key=shared_key,
+            reuse_actors=reuse_actors,
         )
 
         if shared_key is not None:
@@ -232,6 +298,7 @@ class ActorPoolMapOperator(MapOperator):
         ray_remote_args_fn: Optional[Callable[[], Dict[str, Any]]] = None,
         ray_remote_args: Optional[Dict[str, Any]] = None,
         shared_key: Optional[str] = None,
+        reuse_actors: Optional[bool] = None,
     ):
         """Create an ActorPoolMapOperator instance.
 
@@ -244,9 +311,7 @@ class ActorPoolMapOperator(MapOperator):
             target_max_block_size: The target maximum number of bytes to
                 include in an output block.
             min_rows_per_bundle: The number of rows to gather per batch passed to the
-                transform_fn, or None to use the block size. Setting the batch size is
-                important for the performance of GPU-accelerated transform functions.
-                The actual rows passed may be less if the dataset is small.
+                transform_fn, or None to use the block size.
             supports_fusion: Whether this operator supports fusion with other operators.
             ray_remote_args_fn: A function that returns a dictionary of remote args
                 passed to each map worker. The purpose of this argument is to generate
@@ -257,6 +322,7 @@ class ActorPoolMapOperator(MapOperator):
             ray_remote_args: Customize the ray remote args for this op's tasks.
                 See :func:`ray.remote` for details.
             shared_key: Optional key for sharing this operator across executions.
+            reuse_actors: Whether to reuse existing actors instead of creating new ones.
         """
         super().__init__(
             map_transformer,
@@ -269,6 +335,7 @@ class ActorPoolMapOperator(MapOperator):
             ray_remote_args_fn,
             ray_remote_args,
         )
+        self._reuse_actors = reuse_actors if reuse_actors is not None else (shared_key is not None)
         self._shared_key = shared_key
         self._ray_actor_task_remote_args = {}
         actor_task_errors = self.data_context.actor_task_retry_on_errors
@@ -338,11 +405,14 @@ class ActorPoolMapOperator(MapOperator):
         self._actor_locality_enabled = options.actor_locality_enabled
         super().start(options)
 
-        # Create the actor workers and add them to the pool.
+        # Create the actor workers and add them to the pool (only if necessary).
         self._cls = ray.remote(**self._ray_remote_args)(_MapWorker)
-        self._actor_pool.scale_up(
-            self._actor_pool.min_size(), reason="scaling to min size"
-        )
+
+        # If we're reusing actors across executions, some actors may already exist in
+        # the pool. Only create the delta needed to satisfy the minimum size.
+        missing = max(0, self._actor_pool.min_size() - self._actor_pool.current_size())
+        if missing > 0:
+            self._actor_pool.scale_up(missing, reason="scaling to min size")
 
         # If `wait_for_min_actors_s` is specified and is positive, then
         # Actor Pool will block until min number of actors is provisioned.
@@ -505,14 +575,19 @@ class ActorPoolMapOperator(MapOperator):
             )
 
     def _do_shutdown(self, force: bool = False):
-        # For shared operators, don't release from registry during normal shutdown
-        # They should persist for reuse across executions
+        # Decide whether to keep or shutdown the actor pool.
         if self._shared_key is not None and not force:
             logger.info(f"Keeping shared operator {self._shared_key} alive for reuse")
-        elif self._shared_key is not None:
-            _shared_operator_registry.release(self._shared_key)
+            if not self._reuse_actors:
+                # Reuse of operators but not actors – shut down the actor pool.
+                self._actor_pool.shutdown(force=force)
+        else:
+            # Either this is a non-shared operator, or a forced shutdown. Release from
+            # registry (if any) and always shut down the actor pool.
+            if self._shared_key is not None:
+                _shared_operator_registry.release(self._shared_key)
+            self._actor_pool.shutdown(force=force)
 
-        self._actor_pool.shutdown(force=force)
         # NOTE: It's critical for Actor Pool to release actors before calling into
         #       the base method that will attempt to cancel and join pending.
         super()._do_shutdown(force)
@@ -606,6 +681,12 @@ class ActorPoolMapOperator(MapOperator):
         return ray_remote_args
 
     def get_autoscaling_actor_pools(self) -> List[AutoscalingActorPool]:
+        # If we're reusing actors across executions, we don't want the default
+        # autoscaler logic to scale the pool down to zero after the operator
+        # finishes, otherwise the next execution would have to spin them up
+        # again. In that case, we simply opt-out of autoscaling.
+        if self._reuse_actors:
+            return []
         return [self._actor_pool]
 
     def update_resource_usage(self) -> None:

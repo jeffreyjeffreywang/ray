@@ -754,7 +754,23 @@ def clean_registry():
 @pytest.mark.parametrize("ray_start_regular", [{"num_cpus": 4}], indirect=True)
 def test_shared_key_actor_pool_operator_reuse(ray_start_regular, clean_registry):
     """Test that ActorPoolMapOperator with the same shared_key are reused across dataset executions."""
+    @ray.remote
+    class Counter:
+        def __init__(self):
+            self.count = 0
+        
+        def increment(self):
+            self.count += 1
+        
+        def get_count(self):
+            return self.count
+
+    counter = Counter.remote()
+    
     class UDFClass:
+        def __init__(self):
+            ray.get(counter.increment.remote())
+
         def __call__(self, x):
             return x
 
@@ -769,6 +785,9 @@ def test_shared_key_actor_pool_operator_reuse(ray_start_regular, clean_registry)
     assert operator1 is not None
     operator1_id = id(operator1)
 
+    count = ray.get(counter.get_count.remote())
+    assert count == 1
+
     ds2 = ray.data.range(10)
     ds2_result = ds2.map_batches(
         UDFClass, batch_size=1, compute=ray.data.ActorPoolStrategy(size=1), shared_key=shared_key
@@ -781,6 +800,9 @@ def test_shared_key_actor_pool_operator_reuse(ray_start_regular, clean_registry)
 
     assert operator1_id == operator2_id
     assert operator1 is operator2
+
+    count = ray.get(counter.get_count.remote())
+    assert count == 1
 
     expected_result = [{"id": i} for i in range(10)]
     assert sorted(ds1_result, key=lambda x: x["id"]) == expected_result
