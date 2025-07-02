@@ -31,7 +31,6 @@ class AbstractMap(AbstractOneToOne):
         ray_remote_args: Optional[Dict[str, Any]] = None,
         ray_remote_args_fn: Optional[Callable[[], Dict[str, Any]]] = None,
         compute: Optional[ComputeStrategy] = None,
-        shared_key: Optional[str] = None,
     ):
         """
         Args:
@@ -48,14 +47,12 @@ class AbstractMap(AbstractOneToOne):
                 prior to initializing the worker. Args returned from this dict
                 always override the args in ``ray_remote_args``. Note: this is an
                 advanced, experimental feature.
-            shared_key: Optional key for sharing the physical operator across executions.
         """
         super().__init__(name, input_op, num_outputs)
         self._min_rows_per_bundled_input = min_rows_per_bundled_input
         self._ray_remote_args = ray_remote_args or {}
         self._ray_remote_args_fn = ray_remote_args_fn
         self._compute = compute or TaskPoolStrategy()
-        self._shared_key = shared_key
 
 
 class AbstractUDFMap(AbstractMap):
@@ -77,7 +74,6 @@ class AbstractUDFMap(AbstractMap):
         compute: Optional[ComputeStrategy] = None,
         ray_remote_args_fn: Optional[Callable[[], Dict[str, Any]]] = None,
         ray_remote_args: Optional[Dict[str, Any]] = None,
-        shared_key: Optional[str] = None,
     ):
         """
         Args:
@@ -103,7 +99,6 @@ class AbstractUDFMap(AbstractMap):
                 always override the args in ``ray_remote_args``. Note: this is an
                 advanced, experimental feature.
             ray_remote_args: Args to provide to :func:`ray.remote`.
-            shared_key: Optional key for sharing the physical operator across executions.
         """
         name = self._get_operator_name(name, fn)
         super().__init__(
@@ -112,7 +107,6 @@ class AbstractUDFMap(AbstractMap):
             min_rows_per_bundled_input=min_rows_per_bundled_input,
             ray_remote_args=ray_remote_args,
             compute=compute,
-            shared_key=shared_key,
         )
         self._fn = fn
         self._fn_args = fn_args
@@ -183,11 +177,11 @@ class MapBatches(AbstractUDFMap):
             compute=compute,
             ray_remote_args_fn=ray_remote_args_fn,
             ray_remote_args=ray_remote_args,
-            shared_key=shared_key,
         )
         self._batch_size = batch_size
         self._batch_format = batch_format
         self._zero_copy_batch = zero_copy_batch
+        self._shared_key = shared_key
 
     def can_modify_num_rows(self) -> bool:
         return False

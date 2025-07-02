@@ -170,7 +170,6 @@ class vLLMEngineWrapper:
             )
 
         # Initialize the vLLM engine.
-        print("[ycwwang] Initializing vLLMEngine")
         engine_args = vllm.AsyncEngineArgs(
             **kwargs,
         )
@@ -571,7 +570,6 @@ class vLLMEngineStageUDF(StatefulStageUDF):
     def __del__(self):
         if hasattr(self, "llm"):
             # Kill the engine processes.
-            print("[ycwwang] vLLMEngineStageUDF __del__")
             self.llm.shutdown()
 
 
