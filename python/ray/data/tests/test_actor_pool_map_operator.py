@@ -22,7 +22,7 @@ from ray.data._internal.execution.operators.actor_pool_map_operator import (
     ActorPoolMapOperator,
     _ActorPool,
     _ActorTaskSelector,
-    _shared_operator_registry
+    _shared_operator_registry,
 )
 from ray.data._internal.execution.operators.input_data_buffer import InputDataBuffer
 from ray.data._internal.execution.util import make_ref_bundles
@@ -745,28 +745,31 @@ def test_actor_pool_fault_tolerance_e2e(ray_start_cluster, restore_data_context)
     thread.join()
     assert sorted(res, key=lambda x: x["id"]) == [{"id": i} for i in range(num_items)]
 
+
 @pytest.fixture
 def clean_registry():
     yield
     _shared_operator_registry._operators.clear()
     _shared_operator_registry._usage_count.clear()
 
+
 @pytest.mark.parametrize("ray_start_regular", [{"num_cpus": 4}], indirect=True)
 def test_shared_key_actor_pool_operator_reuse(ray_start_regular, clean_registry):
     """Test that ActorPoolMapOperator with the same shared_key are reused across dataset executions."""
+
     @ray.remote
     class Counter:
         def __init__(self):
             self.count = 0
-        
+
         def increment(self):
             self.count += 1
-        
+
         def get_count(self):
             return self.count
 
     counter = Counter.remote()
-    
+
     class UDFClass:
         def __init__(self):
             ray.get(counter.increment.remote())
@@ -778,7 +781,10 @@ def test_shared_key_actor_pool_operator_reuse(ray_start_regular, clean_registry)
 
     ds1 = ray.data.range(10)
     ds1_result = ds1.map_batches(
-        UDFClass, batch_size=1, compute=ray.data.ActorPoolStrategy(size=1), shared_key=shared_key
+        UDFClass,
+        batch_size=1,
+        compute=ray.data.ActorPoolStrategy(size=1),
+        shared_key=shared_key,
     ).take_all()
 
     operator1 = _shared_operator_registry.get(shared_key)
@@ -790,7 +796,10 @@ def test_shared_key_actor_pool_operator_reuse(ray_start_regular, clean_registry)
 
     ds2 = ray.data.range(10)
     ds2_result = ds2.map_batches(
-        UDFClass, batch_size=1, compute=ray.data.ActorPoolStrategy(size=1), shared_key=shared_key
+        UDFClass,
+        batch_size=1,
+        compute=ray.data.ActorPoolStrategy(size=1),
+        shared_key=shared_key,
     ).take_all()
 
     # With the same shared_key, the operator should be reused

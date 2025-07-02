@@ -38,92 +38,6 @@ from ray.llm._internal.common.utils.download_utils import (
 DEFAULT_MODEL_ARCHITECTURE = "UNKNOWN_MODEL_ARCHITECTURE"
 
 
-class SharedvLLMStageManager:
-    """Manager for shared vLLM stage configurations."""
-
-    _shared_stages: Dict[str, Any] = {}
-    _usage_count: Dict[str, int] = {}
-
-    @classmethod
-    def get_or_create_shared_stage(cls, engine_key: str, stage_factory_fn):
-        """Get or create a shared stage."""
-        if engine_key not in cls._shared_stages:
-            print(f"SharedvLLMStageManager: Creating new stage for key: {engine_key}")
-            stage = stage_factory_fn()
-            cls._shared_stages[engine_key] = stage
-            cls._usage_count[engine_key] = 0
-        else:
-            print(
-                f"SharedvLLMStageManager: Reusing existing stage for key: {engine_key}"
-            )
-            stage = cls._shared_stages[engine_key]
-
-        cls._usage_count[engine_key] += 1
-        return cls._shared_stages[engine_key]
-
-    @classmethod
-    def release_shared_stage(cls, engine_key: str):
-        """Release a shared stage."""
-        if engine_key in cls._usage_count:
-            cls._usage_count[engine_key] -= 1
-
-            if cls._usage_count[engine_key] <= 0:
-                print(
-                    f"SharedvLLMStageManager: Cleaning up stage for key: {engine_key}"
-                )
-                if engine_key in cls._shared_stages:
-                    del cls._shared_stages[engine_key]
-                del cls._usage_count[engine_key]
-
-    @classmethod
-    def list_shared_stages(cls) -> Dict[str, Dict[str, Any]]:
-        """List all shared stages."""
-        return {
-            key: {
-                "stage": stage,
-                "usage_count": cls._usage_count.get(key, 0),
-            }
-            for key, stage in cls._shared_stages.items()
-        }
-
-    @classmethod
-    def shutdown_all(cls):
-        """Force shutdown of all shared vLLM stages and their actors.
-        
-        This should be invoked at interpreter exit to make sure that all
-        vLLM engines are terminated and their GPU memory is released.
-        """
-        stages_to_cleanup = list(cls._shared_stages.items())
-        cls._shared_stages.clear()
-        cls._usage_count.clear()
-        
-        for key, stage in stages_to_cleanup:
-            try:
-                print(f"SharedvLLMStageManager: Force shutting down stage {key}")
-                
-                # Force shutdown the underlying actor pool operators for this stage
-                if hasattr(stage, '_shared_engine_key'):
-                    shared_key = stage._shared_engine_key
-                    print(f"Forcing shutdown of actor pool for shared key: {shared_key}")
-                    
-                    # Import here to avoid circular imports
-                    from ray.data._internal.execution.operators.actor_pool_map_operator import (
-                        _shared_operator_registry,
-                    )
-                    
-                    # Force shutdown the shared operator (and its actors)
-                    if _shared_operator_registry.force_shutdown_shared_operator(shared_key):
-                        print(f"Successfully shut down actor pool for key: {shared_key}")
-                    else:
-                        print(f"No actor pool found for key: {shared_key}")
-                        
-                    # Clean up stage reference
-                    delattr(stage, '_shared_engine_key')
-                    
-            except Exception as e:
-                print(f"SharedvLLMStageManager: Failed to cleanup stage {key}: {e}")
-
-
 class vLLMEngineProcessorConfig(OfflineProcessorConfig):
     """The configuration for the vLLM engine processor."""
 
@@ -147,19 +61,11 @@ class vLLMEngineProcessorConfig(OfflineProcessorConfig):
         "specified and LoRA is enabled, then the 'model' in LoRA "
         "requests will be interpreted as model ID used by HF transformers.",
     )
-    # Engine sharing configurations.
-    reuse_engine: bool = Field(
-        default=False,
-        description="Whether to reuse an existing vLLM engine stage if one "
-        "with compatible configuration already exists. This is useful for "
-        "sequential processing steps that use the same model configuration "
-        "to reduce resource requirements.",
-    )
+    # Engine sharing key.
     shared_engine_key: Optional[str] = Field(
         default=None,
-        description="Custom key for engine sharing. If not provided, a key "
-        "will be automatically generated based on model and engine configuration. "
-        "Use this to explicitly control which engines are shared.",
+        description="Custom key for engine sharing. Use this to explicitly "
+        "control which engines are shared.",
     )
 
     @root_validator(pre=True)
@@ -243,91 +149,41 @@ def build_vllm_engine_processor(
 
     # Core stage -- the vLLM engine.
 
-    # Determine if we should use stage sharing
-    if config.reuse_engine and config.shared_engine_key:
-        print(f"Attempting to reuse vLLM stage with key: {config.shared_engine_key}")
-
-        def stage_factory():
-            print(
-                f"Creating new vLLMEngineStage for shared key: {config.shared_engine_key}"
-            )
-            stage = vLLMEngineStage(
-                fn_constructor_kwargs=dict(
-                    batch_size=config.batch_size,
-                    max_concurrent_batches=config.max_concurrent_batches,
-                    model=config.model_source,
-                    engine_kwargs=config.engine_kwargs,
-                    task_type=config.task_type,
-                    max_pending_requests=config.max_pending_requests,
-                    dynamic_lora_loading_path=config.dynamic_lora_loading_path,
+    vllm_stage = vLLMEngineStage(
+        fn_constructor_kwargs=dict(
+            batch_size=config.batch_size,
+            max_concurrent_batches=config.max_concurrent_batches,
+            model=config.model_source,
+            engine_kwargs=config.engine_kwargs,
+            task_type=config.task_type,
+            max_pending_requests=config.max_pending_requests,
+            dynamic_lora_loading_path=config.dynamic_lora_loading_path,
+        ),
+        map_batches_kwargs=dict(
+            zero_copy_batch=True,
+            # The number of running replicas. This is a deprecated field, but
+            # we need to set `max_tasks_in_flight_per_actor` through `compute`,
+            # which initiates enough many overlapping UDF calls per actor, to
+            # saturate `max_concurrency`.
+            compute=ray.data.ActorPoolStrategy(
+                min_size=config.concurrency,
+                max_size=config.concurrency,
+                max_tasks_in_flight_per_actor=max(
+                    DEFAULT_MAX_TASKS_IN_FLIGHT, config.max_concurrent_batches
                 ),
-                map_batches_kwargs=dict(
-                    zero_copy_batch=True,
-                    # The number of running replicas. This is a deprecated field, but
-                    # we need to set `max_tasks_in_flight_per_actor` through `compute`,
-                    # which initiates enough many overlapping UDF calls per actor, to
-                    # saturate `max_concurrency`.
-                    compute=ray.data.ActorPoolStrategy(
-                        min_size=config.concurrency,
-                        max_size=config.concurrency,
-                        max_tasks_in_flight_per_actor=max(
-                            DEFAULT_MAX_TASKS_IN_FLIGHT, config.max_concurrent_batches
-                        ),
-                    ),
-                    # The number of running batches "per actor" in Ray Core level.
-                    # This is used to make sure we overlap batches to avoid the tail
-                    # latency of each batch.
-                    max_concurrency=config.max_concurrent_batches,
-                    resources=config.resources_per_bundle,
-                    accelerator_type=config.accelerator_type,
-                    runtime_env=config.runtime_env,
-                ),
-            )
-            # NEW: Set the shared key on the stage so it can pass it to map_batches
-            stage._shared_engine_key = config.shared_engine_key
-            return stage
-
-        # Get or create the shared stage
-        existing_stages = SharedvLLMStageManager.list_shared_stages()
-        print(f"Existing shared stages: {list(existing_stages.keys())}")
-
-        vllm_stage = SharedvLLMStageManager.get_or_create_shared_stage(
-            config.shared_engine_key, stage_factory
-        )
-    else:
-        print("Creating new vLLMEngineStage (no sharing)")
-        vllm_stage = vLLMEngineStage(
-            fn_constructor_kwargs=dict(
-                batch_size=config.batch_size,
-                max_concurrent_batches=config.max_concurrent_batches,
-                model=config.model_source,
-                engine_kwargs=config.engine_kwargs,
-                task_type=config.task_type,
-                max_pending_requests=config.max_pending_requests,
-                dynamic_lora_loading_path=config.dynamic_lora_loading_path,
             ),
-            map_batches_kwargs=dict(
-                zero_copy_batch=True,
-                # The number of running replicas. This is a deprecated field, but
-                # we need to set `max_tasks_in_flight_per_actor` through `compute`,
-                # which initiates enough many overlapping UDF calls per actor, to
-                # saturate `max_concurrency`.
-                compute=ray.data.ActorPoolStrategy(
-                    min_size=config.concurrency,
-                    max_size=config.concurrency,
-                    max_tasks_in_flight_per_actor=max(
-                        DEFAULT_MAX_TASKS_IN_FLIGHT, config.max_concurrent_batches
-                    ),
-                ),
-                # The number of running batches "per actor" in Ray Core level.
-                # This is used to make sure we overlap batches to avoid the tail
-                # latency of each batch.
-                max_concurrency=config.max_concurrent_batches,
-                resources=config.resources_per_bundle,
-                accelerator_type=config.accelerator_type,
-                runtime_env=config.runtime_env,
-            ),
-        )
+            # The number of running batches "per actor" in Ray Core level.
+            # This is used to make sure we overlap batches to avoid the tail
+            # latency of each batch.
+            max_concurrency=config.max_concurrent_batches,
+            resources=config.resources_per_bundle,
+            accelerator_type=config.accelerator_type,
+            runtime_env=config.runtime_env,
+        ),
+    )
+
+    if config.shared_engine_key:
+        vllm_stage._shared_engine_key = config.shared_engine_key
 
     stages.append(vllm_stage)
 
@@ -386,17 +242,3 @@ def build_vllm_engine_processor(
 
 
 ProcessorBuilder.register(vLLMEngineProcessorConfig, build_vllm_engine_processor)
-
-# Register an atexit hook to ensure all shared vLLM stages are cleaned up when the
-# Python process exits. This prevents lingering vLLM engines and GPU memory leaks.
-import atexit
-
-
-def _cleanup_shared_vllm_stages_on_exit():
-    try:
-        SharedvLLMStageManager.shutdown_all()
-    except Exception as e:  # pragma: no cover
-        print(f"vLLM stage cleanup failed during interpreter exit: {e}")
-
-
-atexit.register(_cleanup_shared_vllm_stages_on_exit)
