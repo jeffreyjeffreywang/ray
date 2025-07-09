@@ -26,16 +26,10 @@ from ray.data._internal.execution.interfaces import (
     TaskContext,
 )
 from ray.data._internal.execution.interfaces.physical_operator import _ActorPoolInfo
-from ray.data._internal.execution.interfaces.op_runtime_metrics import OpRuntimeMetrics
-from ray.data._internal.execution.operators.map_operator import (
-    MapOperator,
-    _map_task,
-    _BlockRefBundler,
-)
+from ray.data._internal.execution.operators.map_operator import MapOperator, _map_task
 from ray.data._internal.execution.operators.map_transformer import MapTransformer
 from ray.data._internal.execution.util import locality_string
 from ray.data._internal.remote_fn import _add_system_error_to_retry_exceptions
-from ray.data._internal.stats import Timer
 from ray.data.block import Block, BlockMetadata
 from ray.data.context import DataContext
 from ray.types import ObjectRef
@@ -114,7 +108,6 @@ class ActorPoolMapOperator(MapOperator):
             ray_remote_args_fn,
             ray_remote_args,
         )
-        self._reuse_actors = shared_key is not None
         self._shared_key = shared_key
         self._ray_actor_task_remote_args = {}
         actor_task_errors = self.data_context.actor_task_retry_on_errors
@@ -373,11 +366,11 @@ class ActorPoolMapOperator(MapOperator):
             )
 
     def _do_shutdown(self, force: bool = False):
-        if self._reuse_actors and not force:
+        if self._shared_key is not None and not force:
             _shared_actor_pool_registry.release(self._shared_key, force=False)
             return
 
-        if self._reuse_actors and force:
+        if self._shared_key is not None and force:
             _shared_actor_pool_registry.release(self._shared_key, force=True)
         else:
             self._actor_pool.shutdown(force=force)
@@ -479,7 +472,7 @@ class ActorPoolMapOperator(MapOperator):
         # autoscaler logic to scale the pool down to zero after the operator
         # finishes, otherwise the next execution would have to spin them up
         # again. In that case, we simply opt-out of autoscaling.
-        if self._reuse_actors:
+        if self._shared_key is not None:
             return []
         return [self._actor_pool]
 
@@ -504,13 +497,6 @@ class ActorPoolMapOperator(MapOperator):
     def get_actor_info(self) -> _ActorPoolInfo:
         """Returns Actor counts for Alive, Restarting and Pending Actors."""
         return self._actor_pool.get_actor_info()
-
-    def _reset(self):
-        """Reset the operator's essential state for reuse across executions."""
-        self._inputs_complete = False
-        self._execution_finished = False
-        self._inputs_done = False
-        self._bundle_queue.clear()
 
     def _verify_actor_pool_compatibility(
         self,
@@ -541,18 +527,16 @@ class ActorPoolMapOperator(MapOperator):
         existing_resources = existing_pool.per_actor_resource_usage()
         new_per_actor_cpu = ray_remote_args.get("num_cpus", 0)
         new_per_actor_gpu = ray_remote_args.get("num_gpus", 0)
-        new_per_actor_memory = ray_remote_args.get("memory", 0)
 
         if (
             existing_resources.cpu != new_per_actor_cpu
             or existing_resources.gpu != new_per_actor_gpu
-            or existing_resources.memory != new_per_actor_memory
         ):
             raise ValueError(
                 f"Cannot reuse shared actor pool with key '{self._shared_key}': "
                 f"Resource requirements mismatch. "
-                f"Existing pool per-actor resources: CPU={existing_resources.cpu}, GPU={existing_resources.gpu}, Memory={existing_resources.memory}. "
-                f"New operator per-actor resources: CPU={new_per_actor_cpu}, GPU={new_per_actor_gpu}, Memory={new_per_actor_memory}."
+                f"Existing pool per-actor resources: CPU={existing_resources.cpu}, GPU={existing_resources.gpu}. "
+                f"New operator per-actor resources: CPU={new_per_actor_cpu}, GPU={new_per_actor_gpu}."
             )
 
         # Note: We don't check scheduling_strategy, max_restarts, max_task_retries etc.

@@ -26,7 +26,6 @@ from ray.data._internal.execution.operators.actor_pool_map_operator import (
 )
 from ray.data._internal.execution.operators.input_data_buffer import InputDataBuffer
 from ray.data._internal.execution.util import make_ref_bundles
-from ray.data._internal.stats import Timer
 from ray.tests.conftest import *  # noqa
 from ray.types import ObjectRef
 
