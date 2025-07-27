@@ -246,14 +246,15 @@ class SGLangEngineProcessorConfig(_SGLangEngineProcessorConfig):
 
 @PublicAPI(stability="alpha")
 def build_llm_processor(
-    config: ProcessorConfig,
+    config: Optional[ProcessorConfig],
     preprocess: Optional[UserDefinedFunction] = None,
     postprocess: Optional[UserDefinedFunction] = None,
+    shared_engine_config: Optional[ProcessorConfig] = None,
 ) -> Processor:
     """Build a LLM processor using the given config.
 
     Args:
-        config: The processor config.
+        config: The processor config. Can be None if using shared_engine_config.
         preprocess: An optional lambda function that takes a row (dict) as input
             and returns a preprocessed row (dict). The output row must contain the
             required fields for the following processing stages. Each row
@@ -263,6 +264,10 @@ def build_llm_processor(
         postprocess: An optional lambda function that takes a row (dict) as input
             and returns a postprocessed row (dict). To keep all the original columns,
             you can use the `**row` syntax to return all the original columns.
+        shared_engine_config: Optional shared engine configuration. If provided, this config
+            will be used to create a shared engine using Ray Serve. Multiple
+            processors can share the same shared_engine_config to reuse the same vLLM engine
+            instances, improving resource utilization. This is only supported for vLLM engine.
 
     Returns:
         The built processor.
@@ -315,6 +320,7 @@ def build_llm_processor(
         config,
         preprocess=preprocess,
         postprocess=postprocess,
+        shared_engine_config=shared_engine_config,
     )
 
 

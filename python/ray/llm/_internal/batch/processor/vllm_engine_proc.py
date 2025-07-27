@@ -1,5 +1,7 @@
 """The vLLM engine processor."""
 
+import math
+import uuid
 from typing import Any, Dict, Optional
 
 import transformers
@@ -17,6 +19,7 @@ from ray.llm._internal.batch.processor.base import (
     OfflineProcessorConfig,
     Processor,
     ProcessorBuilder,
+    _shared_engine_registry,
 )
 from ray.llm._internal.batch.stages import (
     ChatTemplateStage,
@@ -24,6 +27,7 @@ from ray.llm._internal.batch.stages import (
     PrepareImageStage,
     TokenizeStage,
     vLLMEngineStage,
+    vLLMServeStage,
 )
 from ray.llm._internal.batch.stages.vllm_engine_stage import vLLMTaskType
 from ray.llm._internal.common.observability.telemetry_utils import DEFAULT_GPU_TYPE
@@ -31,8 +35,11 @@ from ray.llm._internal.common.utils.download_utils import (
     NodeModelDownloadable,
     download_model_files,
 )
+from ray.llm._internal.serve.builders.application_builders import build_llm_deployment
+from ray.llm._internal.serve.configs.server_models import LLMConfig, ModelLoadingConfig
+from ray.serve import run
 
-DEFAULT_MODEL_ARCHITECTURE = "UNKNOWN_MODEL_ARCHITECTURE"
+DEFAULT_MODEL_ARCHITECTURE = "UNSPECIFIED"
 
 
 class vLLMEngineProcessorConfig(OfflineProcessorConfig):
@@ -66,11 +73,50 @@ class vLLMEngineProcessorConfig(OfflineProcessorConfig):
         return values
 
 
+def _create_serve_deployment_for_shared_engine(
+    shared_engine_config: vLLMEngineProcessorConfig,
+) -> str:
+    """Create a Ray Serve deployment for the shared pool configuration."""
+    # Convert vLLM processor config to LLM config for Serve
+    llm_config = LLMConfig(
+        model_loading_config=ModelLoadingConfig(
+            model_id=shared_engine_config.model_source,  # TODO (ycwwang): Is this correct?
+            model_source=shared_engine_config.model_source,
+        ),
+        engine_kwargs=shared_engine_config.engine_kwargs,
+        runtime_env=shared_engine_config.runtime_env,
+        resources_per_bundle=shared_engine_config.resources_per_bundle,
+        accelerator_type=shared_engine_config.accelerator_type,
+        # TODO (ycwwang): There is a mismatch between batch and serve configurations. Do we want to allow users to tune shared deployment configs?
+        # We will need to augment vLLMEngineProcessorConfig with a new field deployment_config.
+        deployment_config={
+            "num_replicas": shared_engine_config.concurrency,
+            **(
+                {"max_ongoing_requests": shared_engine_config.max_pending_requests}
+                if shared_engine_config.max_pending_requests is not None
+                else {}
+            ),
+            **(
+                {"max_queued_requests": shared_engine_config.max_pending_requests}
+                if shared_engine_config.max_pending_requests is not None
+                else {}
+            ),
+        },
+    )
+
+    deployment_name = f"shared_llm_engine_{uuid.uuid4().hex[:8]}:"
+    app = build_llm_deployment(llm_config, name_prefix=deployment_name)
+    run(app, name=deployment_name)
+
+    return deployment_name
+
+
 def build_vllm_engine_processor(
     config: vLLMEngineProcessorConfig,
     preprocess: Optional[UserDefinedFunction] = None,
     postprocess: Optional[UserDefinedFunction] = None,
     telemetry_agent: Optional[TelemetryAgent] = None,
+    shared_engine_info: Optional[Dict[str, Any]] = None,
 ) -> Processor:
     """Construct a Processor and configure stages.
     Args:
@@ -80,6 +126,8 @@ def build_vllm_engine_processor(
             required fields for the following processing stages.
         postprocess: An optional lambda function that takes a row (dict) as input
             and returns a postprocessed row (dict).
+        telemetry_agent: An optional telemetry agent for collecting usage telemetry.
+        shared_engine_info: Information about shared pool configuration if using shared pool.
 
     Returns:
         The constructed processor.
@@ -137,44 +185,68 @@ def build_vllm_engine_processor(
             )
         )
 
-    # Core stage -- the vLLM engine.
+    # Core stage -- the vLLM engine or Serve deployment
+    if shared_engine_info is not None:
+        shared_engine_config = shared_engine_info.processor_config
 
-    stages.append(
-        vLLMEngineStage(
-            fn_constructor_kwargs=dict(
+        if shared_engine_info.deployment_name is None:
+            deployment_name = _create_serve_deployment_for_shared_engine(
+                shared_engine_config
+            )
+            _shared_engine_registry.set_serve_deployment(
+                shared_engine_config, deployment_name
+            )
+            shared_engine_info.deployment_name = deployment_name
+        else:
+            deployment_name = shared_engine_info.deployment_name
+
+        stages.append(
+            vLLMServeStage(
+                serve_deployment_name=deployment_name,
+                task_type=config.task_type,
                 batch_size=config.batch_size,
                 max_concurrent_batches=config.max_concurrent_batches,
-                model=config.model_source,
-                engine_kwargs=config.engine_kwargs,
-                task_type=config.task_type,
-                max_pending_requests=config.max_pending_requests,
-                dynamic_lora_loading_path=config.dynamic_lora_loading_path,
-            ),
-            map_batches_kwargs=dict(
-                zero_copy_batch=True,
-                # The number of running replicas. This is a deprecated field, but
-                # we need to set `max_tasks_in_flight_per_actor` through `compute`,
-                # which initiates enough many overlapping UDF calls per actor, to
-                # saturate `max_concurrency`.
-                compute=ray.data.ActorPoolStrategy(
-                    # vLLM start up time is significant, so if user give fixed
-                    # concurrency, start all instances without auto-scaling.
-                    min_size=config.concurrency,
-                    max_size=config.concurrency,
-                    max_tasks_in_flight_per_actor=config.experimental.get(
-                        "max_tasks_in_flight_per_actor", DEFAULT_MAX_TASKS_IN_FLIGHT
-                    ),
-                ),
-                # The number of running batches "per actor" in Ray Core level.
-                # This is used to make sure we overlap batches to avoid the tail
-                # latency of each batch.
-                max_concurrency=config.max_concurrent_batches,
-                resources=config.resources_per_bundle,
-                accelerator_type=config.accelerator_type,
-                runtime_env=config.runtime_env,
-            ),
+                concurrency=shared_engine_config.concurrency,
+                model_id=shared_engine_config.model_source,
+            )
         )
-    )
+    else:
+        stages.append(
+            vLLMEngineStage(
+                fn_constructor_kwargs=dict(
+                    batch_size=config.batch_size,
+                    max_concurrent_batches=config.max_concurrent_batches,
+                    model=config.model_source,
+                    engine_kwargs=config.engine_kwargs,
+                    task_type=config.task_type,
+                    max_pending_requests=config.max_pending_requests,
+                    dynamic_lora_loading_path=config.dynamic_lora_loading_path,
+                ),
+                map_batches_kwargs=dict(
+                    zero_copy_batch=True,
+                    # The number of running replicas. This is a deprecated field, but
+                    # we need to set `max_tasks_in_flight_per_actor` through `compute`,
+                    # which initiates enough many overlapping UDF calls per actor, to
+                    # saturate `max_concurrency`.
+                    compute=ray.data.ActorPoolStrategy(
+                        # vLLM start up time is significant, so if user give fixed
+                        # concurrency, start all instances without auto-scaling.
+                        min_size=config.concurrency,
+                        max_size=config.concurrency,
+                        max_tasks_in_flight_per_actor=config.experimental.get(
+                            "max_tasks_in_flight_per_actor", DEFAULT_MAX_TASKS_IN_FLIGHT
+                        ),
+                    ),
+                    # The number of running batches "per actor" in Ray Core level.
+                    # This is used to make sure we overlap batches to avoid the tail
+                    # latency of each batch.
+                    max_concurrency=config.max_concurrent_batches,
+                    resources=config.resources_per_bundle,
+                    accelerator_type=config.accelerator_type,
+                    runtime_env=config.runtime_env,
+                ),
+            )
+        )
 
     if config.detokenize:
         stages.append(

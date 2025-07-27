@@ -2,7 +2,7 @@ import logging
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Type
 
-from pydantic import Field
+from pydantic import Field, BaseModel
 
 import ray
 from ray.data import Dataset
@@ -21,6 +21,44 @@ logger = logging.getLogger(__name__)
 # Higher values here are better for prefetching and locality. It's ok for this to be
 # fairly high since streaming backpressure prevents us from overloading actors.
 DEFAULT_MAX_TASKS_IN_FLIGHT = 4
+
+
+class SharedEngineInfo(BaseModel):
+    """Shared engine are created with Ray Serve deployments. This class tracks the processor config and the deployment name."""
+
+    processor_config: "ProcessorConfig"
+    deployment_name: Optional[str] = None
+
+
+class SharedEngineRegistry:
+    """Registry for tracking shared engine configurations."""
+
+    def __init__(self):
+        self._shared_configs: Dict[int, SharedEngineInfo] = {}
+
+    def register_config(self, config: "ProcessorConfig") -> None:
+        """Register a config."""
+        config_id = id(config)
+        if config_id not in self._shared_configs:
+            self._shared_configs[config_id] = SharedEngineInfo(processor_config=config)
+
+    def get_shared_info(self, config: "ProcessorConfig") -> Optional[SharedEngineInfo]:
+        """Get shared info for a config."""
+        config_id = id(config)
+        if config_id not in self._shared_configs:
+            return None
+
+        return self._shared_configs[config_id]
+
+    def set_serve_deployment(self, config: "ProcessorConfig", deployment: str) -> None:
+        """Set the serve deployment name for a config."""
+        config_id = id(config)
+        if config_id in self._shared_configs:
+            self._shared_configs[config_id].deployment_name = deployment
+
+
+# Global shared engine registry
+_shared_engine_registry = SharedEngineRegistry()
 
 
 class ProcessorConfig(BaseModelExtended):
@@ -274,19 +312,33 @@ class ProcessorBuilder:
     @classmethod
     def build(
         cls,
-        config: ProcessorConfig,
+        config: Optional[ProcessorConfig],
+        shared_engine_config: Optional[ProcessorConfig] = None,
         override_stage_config_fn: Optional[Callable] = None,
         **kwargs,
     ) -> Processor:
         """Build a processor.
 
         Args:
-            config: The processor config.
+            config: The processor config. Can be None if using shared_engine_config.
+            shared_engine_config: Optional shared engine configuration. If provided, this config
+                will be used to create a shared engine using Ray Serve. This is only supported for vLLM engine.
             override_stage_config_fn: Custom stages configurations.
 
         Returns:
             The built processor.
         """
+        if shared_engine_config is not None:
+            _shared_engine_registry.register_config(shared_engine_config)
+
+            kwargs["shared_engine_info"] = _shared_engine_registry.get_shared_info(
+                shared_engine_config
+            )
+
+            # Use the shared_engine_config as the main config if config is None
+            if config is None:
+                config = shared_engine_config
+
         type_name = type(config).__name__
         if type_name not in cls._registry:
             raise ValueError(
