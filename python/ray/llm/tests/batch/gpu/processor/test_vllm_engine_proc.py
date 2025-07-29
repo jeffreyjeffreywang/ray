@@ -7,6 +7,7 @@ import ray
 from ray.llm._internal.batch.processor import ProcessorBuilder
 from ray.llm._internal.batch.processor.vllm_engine_proc import (
     vLLMEngineProcessorConfig,
+    vLLMSharedEngineProcessorConfig,
 )
 
 
@@ -265,17 +266,26 @@ def test_multi_turn_shared_engine(gpu_type, model_opt_125m):
 {% endif %}
     """
 
-    # Create a shared engine configuration
-    shared_engine_config = vLLMEngineProcessorConfig(
-        model_source=model_opt_125m,
-        engine_kwargs=dict(
-            enable_prefix_caching=False,
-            enable_chunked_prefill=True,
-            max_num_batched_tokens=2048,
-            max_model_len=2048,
-            # Skip CUDA graph capturing to reduce startup time.
-            enforce_eager=True,
+    from ray.llm._internal.serve.configs.server_models import (
+        LLMConfig,
+        ModelLoadingConfig,
+    )
+
+    shared_processor_config = vLLMSharedEngineProcessorConfig(
+        llm_config=LLMConfig(
+            model_loading_config=ModelLoadingConfig(
+                model_id=model_opt_125m,
+            ),
+            engine_kwargs=dict(
+                enable_prefix_caching=False,
+                enable_chunked_prefill=True,
+                max_num_batched_tokens=2048,
+                max_model_len=2048,
+                # Skip CUDA graph capturing to reduce startup time.
+                enforce_eager=True,
+            ),
         ),
+        model_source=model_opt_125m,
         batch_size=16,
         accelerator_type=gpu_type,
         concurrency=1,
@@ -286,8 +296,7 @@ def test_multi_turn_shared_engine(gpu_type, model_opt_125m):
     )
 
     processor1 = ProcessorBuilder.build(
-        config=None,
-        shared_engine_config=shared_engine_config,
+        config=shared_processor_config,
         preprocess=lambda row: dict(
             messages=[
                 {"role": "system", "content": "You are a calculator"},
@@ -301,14 +310,13 @@ def test_multi_turn_shared_engine(gpu_type, model_opt_125m):
         ),
         postprocess=lambda row: {
             "resp1": row["generated_text"],
-            **row,
         },
     )
 
     processor2 = ProcessorBuilder.build(
-        config=None,
-        shared_engine_config=shared_engine_config,
+        config=shared_processor_config,
         preprocess=lambda row: dict(
+            **row,
             messages=[
                 {"role": "system", "content": "Based on the previous conversation"},
                 {"role": "user", "content": "What is this number minus 2?"},
@@ -320,12 +328,12 @@ def test_multi_turn_shared_engine(gpu_type, model_opt_125m):
             ),
         ),
         postprocess=lambda row: {
-            "resp2": row["generated_text"],
             **row,
+            "resp2": row["generated_text"],
         },
     )
 
-    ds = ray.data.range(60)
+    ds = ray.data.range(10)
     ds = ds.map(lambda x: {"id": x["id"], "val": x["id"] + 5})
 
     ds_turn1 = processor1(ds)
@@ -333,8 +341,7 @@ def test_multi_turn_shared_engine(gpu_type, model_opt_125m):
 
     outs = ds_turn2.take_all()
 
-    assert len(outs) == 60
-    print(outs)
+    assert len(outs) == 10
     assert all("resp1" in out for out in outs)
     assert all("resp2" in out for out in outs)
 

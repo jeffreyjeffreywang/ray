@@ -7,6 +7,7 @@ from ray.llm._internal.batch.processor import (
     ProcessorConfig as _ProcessorConfig,
     SGLangEngineProcessorConfig as _SGLangEngineProcessorConfig,
     vLLMEngineProcessorConfig as _vLLMEngineProcessorConfig,
+    vLLMSharedEngineProcessorConfig as _vLLMSharedEngineProcessorConfig,
 )
 from ray.util.annotations import PublicAPI
 
@@ -245,16 +246,38 @@ class SGLangEngineProcessorConfig(_SGLangEngineProcessorConfig):
 
 
 @PublicAPI(stability="alpha")
+class vLLMSharedEngineProcessorConfig(_vLLMSharedEngineProcessorConfig):
+    """The configuration for the vLLM shared engine processor.
+
+    This config wraps LLMConfig for Serve deployment configuration and adds
+    task type and map_batches arguments for the processing stage.
+
+    Args:
+        llm_config: The LLMConfig for the Serve deployment. This directly configures
+            the vLLM engine and deployment settings.
+        task_type: The task type to use. If not specified, will use 'generate' by default.
+        map_batches_kwargs: Arguments for the map_batches operation. This includes
+            batch_size, concurrency, and other processing parameters.
+        batch_size: Configures batch size for the processor.
+        concurrency: Configures concurrency for the processor.
+        max_concurrent_batches: Configures the maximum number of concurrent batches.
+        max_pending_requests: Configures the maximum number of pending requests.
+        experimental: Configures experimental features for the processor.
+    """
+
+    pass
+
+
+@PublicAPI(stability="alpha")
 def build_llm_processor(
-    config: Optional[ProcessorConfig],
+    config: ProcessorConfig,
     preprocess: Optional[UserDefinedFunction] = None,
     postprocess: Optional[UserDefinedFunction] = None,
-    shared_engine_config: Optional[ProcessorConfig] = None,
 ) -> Processor:
     """Build a LLM processor using the given config.
 
     Args:
-        config: The processor config. Can be None if using shared_engine_config.
+        config: The processor config.
         preprocess: An optional lambda function that takes a row (dict) as input
             and returns a preprocessed row (dict). The output row must contain the
             required fields for the following processing stages. Each row
@@ -264,10 +287,6 @@ def build_llm_processor(
         postprocess: An optional lambda function that takes a row (dict) as input
             and returns a postprocessed row (dict). To keep all the original columns,
             you can use the `**row` syntax to return all the original columns.
-        shared_engine_config: Optional shared engine configuration. If provided, this config
-            will be used to create a shared engine using Ray Serve. Multiple
-            processors can share the same shared_engine_config to reuse the same vLLM engine
-            instances, improving resource utilization. This is only supported for vLLM engine.
 
     Returns:
         The built processor.
@@ -314,13 +333,10 @@ def build_llm_processor(
             for row in ds.take_all():
                 print(row)
     """
-    from ray.llm._internal.batch.processor import ProcessorBuilder
+    from ray.llm._internal.batch.processor.base import ProcessorBuilder
 
     return ProcessorBuilder.build(
-        config,
-        preprocess=preprocess,
-        postprocess=postprocess,
-        shared_engine_config=shared_engine_config,
+        config=config, preprocess=preprocess, postprocess=postprocess
     )
 
 
@@ -329,6 +345,7 @@ __all__ = [
     "Processor",
     "HttpRequestProcessorConfig",
     "vLLMEngineProcessorConfig",
+    "vLLMSharedEngineProcessorConfig",
     "SGLangEngineProcessorConfig",
     "build_llm_processor",
 ]

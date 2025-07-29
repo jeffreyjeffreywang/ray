@@ -5,7 +5,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 import transformers
-from pydantic import Field, root_validator
+from pydantic import Field, root_validator, model_validator
 
 import ray
 from ray.data.block import UserDefinedFunction
@@ -19,15 +19,16 @@ from ray.llm._internal.batch.processor.base import (
     OfflineProcessorConfig,
     Processor,
     ProcessorBuilder,
-    _shared_engine_registry,
+    ProcessorConfig,
 )
+from ray.llm._internal.batch.processor.shared_engine import _shared_engine_registry
 from ray.llm._internal.batch.stages import (
     ChatTemplateStage,
     DetokenizeStage,
     PrepareImageStage,
     TokenizeStage,
     vLLMEngineStage,
-    vLLMServeStage,
+    vLLMSharedEngineStage,
 )
 from ray.llm._internal.batch.stages.vllm_engine_stage import vLLMTaskType
 from ray.llm._internal.common.observability.telemetry_utils import DEFAULT_GPU_TYPE
@@ -39,7 +40,7 @@ from ray.llm._internal.serve.builders.application_builders import build_llm_depl
 from ray.llm._internal.serve.configs.server_models import LLMConfig, ModelLoadingConfig
 from ray.serve import run
 
-DEFAULT_MODEL_ARCHITECTURE = "UNSPECIFIED"
+DEFAULT_MODEL_ARCHITECTURE = "UNKNOWN_MODEL_ARCHITECTURE"
 
 
 class vLLMEngineProcessorConfig(OfflineProcessorConfig):
@@ -73,46 +74,60 @@ class vLLMEngineProcessorConfig(OfflineProcessorConfig):
         return values
 
 
-def _create_serve_deployment_for_shared_engine(
-    shared_engine_config: vLLMEngineProcessorConfig,
-) -> str:
-    """Create a Ray Serve deployment for the shared pool configuration."""
-    # Convert vLLM processor config to LLM config for Serve
-    llm_config = LLMConfig(
-        model_loading_config=ModelLoadingConfig(
-            model_id=shared_engine_config.model_source,  # TODO (ycwwang): Is this correct?
-            model_source=shared_engine_config.model_source,
-        ),
-        engine_kwargs=shared_engine_config.engine_kwargs,
-        runtime_env=shared_engine_config.runtime_env,
-        resources_per_bundle=shared_engine_config.resources_per_bundle,
-        accelerator_type=shared_engine_config.accelerator_type,
-        # TODO (ycwwang): There is a mismatch between batch and serve configurations. Do we want to allow users to tune shared deployment configs?
-        # We will need to augment vLLMEngineProcessorConfig with a new field deployment_config.
-        deployment_config={
-            "num_replicas": shared_engine_config.concurrency,
-            **(
-                {"max_ongoing_requests": shared_engine_config.max_pending_requests}
-                if shared_engine_config.max_pending_requests is not None
-                else {}
-            ),
-            **(
-                {"max_queued_requests": shared_engine_config.max_pending_requests}
-                if shared_engine_config.max_pending_requests is not None
-                else {}
-            ),
-        },
+class vLLMSharedEngineProcessorConfig(OfflineProcessorConfig):
+    """Configuration for vLLM shared engine processor using Ray Serve.
+
+    Since Ray Data prohibits sharing actors across stages, this processor uses
+    Ray Serve deployments to share the same vLLM engine across multiple processing
+    stages. This configuration wraps LLMConfig for Serve deployment setup and
+    adds task type and map_batches parameters for the processing stage.
+    """
+
+    # LLMConfig for Serve deployment
+    llm_config: LLMConfig = Field(
+        description="The LLMConfig for the Serve deployment. This directly configures "
+        "the vLLM engine and deployment settings."
+    )
+    task_type: vLLMTaskType = Field(
+        default=vLLMTaskType.GENERATE,
+        description="The task type to use. If not specified, will use "
+        "'generate' by default.",
     )
 
-    deployment_name = f"shared_llm_engine_{uuid.uuid4().hex[:8]}:"
-    app = build_llm_deployment(llm_config, name_prefix=deployment_name)
+    @model_validator(mode="before")
+    @classmethod
+    def validate_task_type(cls, values):
+        if isinstance(values, dict):
+            task_type_str = values.get("task_type", "generate")
+            values["task_type"] = vLLMTaskType(task_type_str)
+        return values
+
+    @model_validator(mode="after")
+    def set_model_source_from_llm_config(self):
+        """Set model_source from llm_config if not provided."""
+        if self.model_source is None and self.llm_config:
+            # Use object.__setattr__ to bypass Pydantic validation and avoid recursion
+            object.__setattr__(
+                self, "model_source", self.llm_config.model_loading_config.model_id
+            )
+        return self
+
+
+def _create_serve_deployment_for_shared_engine(
+    shared_processor_config: vLLMSharedEngineProcessorConfig,
+) -> str:
+    """Create a Ray Serve deployment for the shared engine configuration."""
+    deployment_name = f"shared_llm_engine_{uuid.uuid4().hex}:"
+    app = build_llm_deployment(
+        shared_processor_config.llm_config, name_prefix=deployment_name
+    )
     run(app, name=deployment_name)
 
     return deployment_name
 
 
 def build_vllm_engine_processor(
-    config: vLLMEngineProcessorConfig,
+    config: ProcessorConfig,
     preprocess: Optional[UserDefinedFunction] = None,
     postprocess: Optional[UserDefinedFunction] = None,
     telemetry_agent: Optional[TelemetryAgent] = None,
@@ -185,29 +200,31 @@ def build_vllm_engine_processor(
             )
         )
 
-    # Core stage -- the vLLM engine or Serve deployment
-    if shared_engine_info is not None:
-        shared_engine_config = shared_engine_info.processor_config
-
-        if shared_engine_info.deployment_name is None:
-            deployment_name = _create_serve_deployment_for_shared_engine(
-                shared_engine_config
-            )
-            _shared_engine_registry.set_serve_deployment(
-                shared_engine_config, deployment_name
-            )
-            shared_engine_info.deployment_name = deployment_name
+    # Core stage -- the vLLM engine
+    if isinstance(config, vLLMSharedEngineProcessorConfig):
+        if shared_engine_info is not None:
+            if shared_engine_info.deployment_name is None:
+                deployment_name = _create_serve_deployment_for_shared_engine(config)
+                _shared_engine_registry.set_serve_deployment(config, deployment_name)
+            else:
+                deployment_name = shared_engine_info.deployment_name
         else:
-            deployment_name = shared_engine_info.deployment_name
+            raise RuntimeError(
+                "Shared engine info is required for shared engine processor."
+            )
 
         stages.append(
-            vLLMServeStage(
-                serve_deployment_name=deployment_name,
-                task_type=config.task_type,
-                batch_size=config.batch_size,
-                max_concurrent_batches=config.max_concurrent_batches,
-                concurrency=shared_engine_config.concurrency,
-                model_id=shared_engine_config.model_source,
+            vLLMSharedEngineStage(
+                fn_constructor_kwargs=dict(
+                    serve_deployment_name=deployment_name,
+                    task_type=config.task_type,
+                    model_id=config.llm_config.model_loading_config.model_id,
+                ),
+                map_batches_kwargs=dict(
+                    batch_size=config.batch_size,
+                    concurrency=config.concurrency,
+                    zero_copy_batch=True,
+                ),
             )
         )
     else:
@@ -217,7 +234,7 @@ def build_vllm_engine_processor(
                     batch_size=config.batch_size,
                     max_concurrent_batches=config.max_concurrent_batches,
                     model=config.model_source,
-                    engine_kwargs=config.engine_kwargs,
+                    engine_kwargs=engine_kwargs,
                     task_type=config.task_type,
                     max_pending_requests=config.max_pending_requests,
                     dynamic_lora_loading_path=config.dynamic_lora_loading_path,
@@ -263,6 +280,12 @@ def build_vllm_engine_processor(
             )
         )
 
+    # Get engine_kwargs based on config type
+    if isinstance(config, vLLMSharedEngineProcessorConfig):
+        engine_kwargs = config.llm_config.engine_kwargs
+    else:
+        engine_kwargs = config.engine_kwargs
+
     model_path = download_model_files(
         model_id=config.model_source,
         mirror_config=None,
@@ -271,7 +294,7 @@ def build_vllm_engine_processor(
     )
     hf_config = transformers.AutoConfig.from_pretrained(
         model_path,
-        trust_remote_code=config.engine_kwargs.get("trust_remote_code", False),
+        trust_remote_code=engine_kwargs.get("trust_remote_code", False),
     )
 
     architectures = getattr(hf_config, "architectures", [])
@@ -286,10 +309,8 @@ def build_vllm_engine_processor(
             accelerator_type=config.accelerator_type or DEFAULT_GPU_TYPE,
             concurrency=config.concurrency,
             task_type=vLLMTaskType(config.task_type),
-            pipeline_parallel_size=config.engine_kwargs.get(
-                "pipeline_parallel_size", 1
-            ),
-            tensor_parallel_size=config.engine_kwargs.get("tensor_parallel_size", 1),
+            pipeline_parallel_size=engine_kwargs.get("pipeline_parallel_size", 1),
+            tensor_parallel_size=engine_kwargs.get("tensor_parallel_size", 1),
         )
     )
 
@@ -303,3 +324,4 @@ def build_vllm_engine_processor(
 
 
 ProcessorBuilder.register(vLLMEngineProcessorConfig, build_vllm_engine_processor)
+ProcessorBuilder.register(vLLMSharedEngineProcessorConfig, build_vllm_engine_processor)
