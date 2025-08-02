@@ -1,11 +1,10 @@
 """The vLLM engine processor."""
 
-import math
 import uuid
 from typing import Any, Dict, Optional
 
 import transformers
-from pydantic import Field, root_validator, model_validator
+from pydantic import Field, root_validator
 
 import ray
 from ray.data.block import UserDefinedFunction
@@ -37,7 +36,7 @@ from ray.llm._internal.common.utils.download_utils import (
     download_model_files,
 )
 from ray.llm._internal.serve.builders.application_builders import build_llm_deployment
-from ray.llm._internal.serve.configs.server_models import LLMConfig, ModelLoadingConfig
+from ray.serve.llm import LLMConfig, ModelLoadingConfig
 from ray.serve import run
 
 DEFAULT_MODEL_ARCHITECTURE = "UNKNOWN_MODEL_ARCHITECTURE"
@@ -94,23 +93,12 @@ class vLLMSharedEngineProcessorConfig(OfflineProcessorConfig):
         "'generate' by default.",
     )
 
-    @model_validator(mode="before")
-    @classmethod
+    @root_validator(pre=True)
     def validate_task_type(cls, values):
         if isinstance(values, dict):
             task_type_str = values.get("task_type", "generate")
             values["task_type"] = vLLMTaskType(task_type_str)
         return values
-
-    @model_validator(mode="after")
-    def set_model_source_from_llm_config(self):
-        """Set model_source from llm_config if not provided."""
-        if self.model_source is None and self.llm_config:
-            # Use object.__setattr__ to bypass Pydantic validation and avoid recursion
-            object.__setattr__(
-                self, "model_source", self.llm_config.model_loading_config.model_id
-            )
-        return self
 
 
 def _create_serve_deployment_for_shared_engine(
@@ -198,7 +186,6 @@ def build_vllm_engine_processor(
             )
         )
 
-    # Get engine_kwargs based on config type
     if isinstance(config, vLLMSharedEngineProcessorConfig):
         engine_kwargs = config.llm_config.engine_kwargs
     else:
