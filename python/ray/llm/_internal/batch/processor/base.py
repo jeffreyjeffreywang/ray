@@ -295,16 +295,17 @@ class ProcessorBuilder:
         Returns:
             The built processor.
         """
-        # Check if this is a shared engine config (lazy import to avoid circular deps)
-        if config.__class__.__name__ == "vLLMSharedEngineProcessorConfig":
+
+        from ray.llm._internal.batch.processor.vllm_engine_proc import (
+            vLLMSharedEngineProcessorConfig,
+        )
+
+        if isinstance(config, vLLMSharedEngineProcessorConfig):
             from ray.llm._internal.batch.processor.shared_engine import (
                 _shared_engine_registry,
             )
 
             _shared_engine_registry.register_config(config)
-            kwargs["shared_engine_info"] = _shared_engine_registry.get_shared_info(
-                config
-            )
 
         type_name = type(config).__name__
         if type_name not in cls._registry:

@@ -9,6 +9,28 @@ from ray.llm._internal.batch.processor.vllm_engine_proc import (
     vLLMEngineProcessorConfig,
     vLLMSharedEngineProcessorConfig,
 )
+from ray.llm._internal.serve.configs.server_models import (
+    LLMConfig,
+    ModelLoadingConfig,
+)
+
+CHAT_TEMPLATE = """
+{% if messages[0]['role'] == 'system' %}
+    {% set offset = 1 %}
+{% else %}
+    {% set offset = 0 %}
+{% endif %}
+{{ bos_token }}
+{% for message in messages %}
+    {% if (message['role'] == 'user') != (loop.index0 % 2 == offset) %}
+        {{ raise_exception('Conversation roles must alternate user/assistant/user/assistant/...') }}
+    {% endif %}
+    {{ '<|im_start|>' + message['role'] + '\n' + message['content'] | trim + '<|im_end|>\n' }}
+{% endfor %}
+{% if add_generation_prompt %}
+    {{ '<|im_start|>assistant\n' }}
+{% endif %}
+    """
 
 
 def test_vllm_engine_processor(gpu_type, model_opt_125m):
@@ -70,27 +92,6 @@ def test_vllm_engine_processor(gpu_type, model_opt_125m):
 def test_generation_model(gpu_type, model_opt_125m):
     # OPT models don't have chat template, so we use ChatML template
     # here to demonstrate the usage of custom chat template.
-    chat_template = """
-{% if messages[0]['role'] == 'system' %}
-    {% set offset = 1 %}
-{% else %}
-    {% set offset = 0 %}
-{% endif %}
-
-{{ bos_token }}
-{% for message in messages %}
-    {% if (message['role'] == 'user') != (loop.index0 % 2 == offset) %}
-        {{ raise_exception('Conversation roles must alternate user/assistant/user/assistant/...') }}
-    {% endif %}
-
-    {{ '<|im_start|>' + message['role'] + '\n' + message['content'] | trim + '<|im_end|>\n' }}
-{% endfor %}
-
-{% if add_generation_prompt %}
-    {{ '<|im_start|>assistant\n' }}
-{% endif %}
-    """
-
     processor_config = vLLMEngineProcessorConfig(
         model_source=model_opt_125m,
         engine_kwargs=dict(
@@ -105,7 +106,7 @@ def test_generation_model(gpu_type, model_opt_125m):
         accelerator_type=gpu_type,
         concurrency=1,
         apply_chat_template=True,
-        chat_template=chat_template,
+        chat_template=CHAT_TEMPLATE,
         tokenize=True,
         detokenize=True,
     )
@@ -246,31 +247,6 @@ def test_vision_model(gpu_type, model_smolvlm_256m):
 
 def test_multi_turn_shared_engine(gpu_type, model_opt_125m):
     """Test multi-turn conversation using a shared vLLM engine."""
-    # OPT models don't have chat template, so we use ChatML template
-    # here to demonstrate the usage of custom chat template.
-    chat_template = """
-{% if messages[0]['role'] == 'system' %}
-    {% set offset = 1 %}
-{% else %}
-    {% set offset = 0 %}
-{% endif %}
-{{ bos_token }}
-{% for message in messages %}
-    {% if (message['role'] == 'user') != (loop.index0 % 2 == offset) %}
-        {{ raise_exception('Conversation roles must alternate user/assistant/user/assistant/...') }}
-    {% endif %}
-    {{ '<|im_start|>' + message['role'] + '\n' + message['content'] | trim + '<|im_end|>\n' }}
-{% endfor %}
-{% if add_generation_prompt %}
-    {{ '<|im_start|>assistant\n' }}
-{% endif %}
-    """
-
-    from ray.llm._internal.serve.configs.server_models import (
-        LLMConfig,
-        ModelLoadingConfig,
-    )
-
     shared_processor_config = vLLMSharedEngineProcessorConfig(
         llm_config=LLMConfig(
             model_loading_config=ModelLoadingConfig(
@@ -290,7 +266,7 @@ def test_multi_turn_shared_engine(gpu_type, model_opt_125m):
         accelerator_type=gpu_type,
         concurrency=1,
         apply_chat_template=True,
-        chat_template=chat_template,
+        chat_template=CHAT_TEMPLATE,
         tokenize=True,
         detokenize=True,
     )
@@ -344,6 +320,74 @@ def test_multi_turn_shared_engine(gpu_type, model_opt_125m):
     assert len(outs) == 10
     assert all("resp1" in out for out in outs)
     assert all("resp2" in out for out in outs)
+
+
+def test_shared_engine_instantiation(gpu_type, model_opt_125m):
+    """Test that shared engine deployments are properly instantiated."""
+    with patch(
+        "ray.llm._internal.batch.processor.vllm_engine_proc.build_llm_deployment"
+    ) as mock_build_deployment, patch(
+        "ray.llm._internal.batch.processor.vllm_engine_proc.run"
+    ) as mock_run:
+        mock_build_deployment.return_value = MagicMock()
+        mock_run.return_value = MagicMock()
+
+        shared_processor_config = vLLMSharedEngineProcessorConfig(
+            llm_config=LLMConfig(
+                model_loading_config=ModelLoadingConfig(
+                    model_id=model_opt_125m,
+                ),
+                engine_kwargs=dict(
+                    enable_prefix_caching=False,
+                    enable_chunked_prefill=True,
+                    max_num_batched_tokens=2048,
+                    max_model_len=2048,
+                    # Skip CUDA graph capturing to reduce startup time.
+                    enforce_eager=True,
+                ),
+            ),
+            model_source=model_opt_125m,
+            batch_size=16,
+            accelerator_type=gpu_type,
+            concurrency=1,
+            apply_chat_template=True,
+            chat_template=CHAT_TEMPLATE,
+            tokenize=True,
+            detokenize=True,
+        )
+
+        processor1 = ProcessorBuilder.build(config=shared_processor_config)
+        processor2 = ProcessorBuilder.build(config=shared_processor_config)
+
+        assert mock_build_deployment.call_count == 1
+
+        shared_processor_config2 = vLLMSharedEngineProcessorConfig(
+            llm_config=LLMConfig(
+                model_loading_config=ModelLoadingConfig(
+                    model_id=model_opt_125m,
+                ),
+                engine_kwargs=dict(
+                    enable_prefix_caching=False,
+                    enable_chunked_prefill=True,
+                    max_num_batched_tokens=2048,
+                    max_model_len=2048,
+                    # Skip CUDA graph capturing to reduce startup time.
+                    enforce_eager=True,
+                ),
+            ),
+            model_source=model_opt_125m,
+            batch_size=16,
+            accelerator_type=gpu_type,
+            concurrency=1,
+            apply_chat_template=True,
+            chat_template=CHAT_TEMPLATE,
+            tokenize=True,
+            detokenize=True,
+        )
+
+        processor3 = ProcessorBuilder.build(config=shared_processor_config2)
+
+        assert mock_build_deployment.call_count == 2
 
 
 class TestVLLMEngineProcessorConfig:

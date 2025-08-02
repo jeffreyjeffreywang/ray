@@ -131,7 +131,6 @@ def build_vllm_engine_processor(
     preprocess: Optional[UserDefinedFunction] = None,
     postprocess: Optional[UserDefinedFunction] = None,
     telemetry_agent: Optional[TelemetryAgent] = None,
-    shared_engine_info: Optional[Dict[str, Any]] = None,
 ) -> Processor:
     """Construct a Processor and configure stages.
     Args:
@@ -142,7 +141,6 @@ def build_vllm_engine_processor(
         postprocess: An optional lambda function that takes a row (dict) as input
             and returns a postprocessed row (dict).
         telemetry_agent: An optional telemetry agent for collecting usage telemetry.
-        shared_engine_info: Information about shared pool configuration if using shared pool.
 
     Returns:
         The constructed processor.
@@ -200,18 +198,24 @@ def build_vllm_engine_processor(
             )
         )
 
+    # Get engine_kwargs based on config type
+    if isinstance(config, vLLMSharedEngineProcessorConfig):
+        engine_kwargs = config.llm_config.engine_kwargs
+    else:
+        engine_kwargs = config.engine_kwargs
+
     # Core stage -- the vLLM engine
     if isinstance(config, vLLMSharedEngineProcessorConfig):
-        if shared_engine_info is not None:
-            if shared_engine_info.deployment_name is None:
-                deployment_name = _create_serve_deployment_for_shared_engine(config)
-                _shared_engine_registry.set_serve_deployment(config, deployment_name)
-            else:
-                deployment_name = shared_engine_info.deployment_name
+        shared_engine_metadata = _shared_engine_registry.get_shared_metadata(config)
+
+        if (
+            shared_engine_metadata is None
+            or shared_engine_metadata.deployment_name is None
+        ):
+            deployment_name = _create_serve_deployment_for_shared_engine(config)
+            _shared_engine_registry.set_serve_deployment(config, deployment_name)
         else:
-            raise RuntimeError(
-                "Shared engine info is required for shared engine processor."
-            )
+            deployment_name = shared_engine_metadata.deployment_name
 
         stages.append(
             vLLMSharedEngineStage(
@@ -279,12 +283,6 @@ def build_vllm_engine_processor(
                 ),
             )
         )
-
-    # Get engine_kwargs based on config type
-    if isinstance(config, vLLMSharedEngineProcessorConfig):
-        engine_kwargs = config.llm_config.engine_kwargs
-    else:
-        engine_kwargs = config.engine_kwargs
 
     model_path = download_model_files(
         model_id=config.model_source,

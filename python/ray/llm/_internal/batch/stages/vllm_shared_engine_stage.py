@@ -86,7 +86,6 @@ class vLLMSharedEngineStageUDF(StatefulStageUDF):
                 raise RuntimeError(f"Serve deployment error: {response.message}")
 
             # Convert CompletionResponse to vLLMOutputData
-            # CompletionResponse has neither generated_tokens nor num_generated_tokens
             output_data = vLLMOutputData(
                 prompt=prompt,
                 prompt_token_ids=prompt_token_ids,
@@ -176,15 +175,10 @@ class vLLMSharedEngineStageUDF(StatefulStageUDF):
             time_taken = time.perf_counter() - t
 
             yield {
-                "generated_text": result.generated_text,
-                "generated_tokens": result.generated_tokens,
-                "num_generated_tokens": result.num_generated_tokens,
-                "num_input_tokens": result.num_input_tokens,
-                "request_id": req.request_id,
+                **result.model_dump(),
                 self.IDX_IN_BATCH_COLUMN: req.idx_in_batch,
                 "batch_uuid": batch_uuid.hex,
                 "time_taken_llm": time_taken,
-                # "params": str(request.params), # TODO: Figure out what to do with params
             }
 
         logger.info(
