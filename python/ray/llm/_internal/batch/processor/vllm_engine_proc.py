@@ -59,6 +59,11 @@ class vLLMEngineProcessorConfig(OfflineProcessorConfig):
         "requests will be interpreted as model ID used by HF transformers.",
     )
 
+    placement_group_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="The configuration for the placement group.",
+    )
+
     @root_validator(pre=True)
     def validate_task_type(cls, values):
         task_type_str = values.get("task_type", "generate")
@@ -149,6 +154,7 @@ def build_vllm_engine_processor(
                 task_type=config.task_type,
                 max_pending_requests=config.max_pending_requests,
                 dynamic_lora_loading_path=config.dynamic_lora_loading_path,
+                placement_group_config=config.placement_group_config,
             ),
             map_batches_kwargs=dict(
                 zero_copy_batch=True,

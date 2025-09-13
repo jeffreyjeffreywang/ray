@@ -29,6 +29,10 @@ def test_vllm_engine_processor(gpu_type, model_opt_125m):
         tokenize=True,
         detokenize=True,
         has_image=True,
+        placement_group_config=dict(
+            bundles=[{"CPU": 1, "GPU": 1, "accelerator_type:A10G": 1}],
+            strategy="PACK",
+        ),
     )
     processor = ProcessorBuilder.build(config)
     assert processor.list_stage_names() == [
@@ -51,6 +55,10 @@ def test_vllm_engine_processor(gpu_type, model_opt_125m):
         "dynamic_lora_loading_path": None,
         "max_concurrent_batches": 8,
         "batch_size": 64,
+        "placement_group_config": {
+            "bundles": [{"CPU": 1, "GPU": 1, "accelerator_type:A10G": 1}],
+            "strategy": "PACK",
+        },
     }
 
     runtime_env = stage.map_batches_kwargs.pop("runtime_env")

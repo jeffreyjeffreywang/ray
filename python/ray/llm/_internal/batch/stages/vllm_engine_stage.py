@@ -583,6 +583,7 @@ def _ray_scheduling_strategy_fn(
     num_bundles_per_replica: int,
     accelerator_type: Optional[str] = None,
     resources_per_bundle: Optional[Dict[str, float]] = None,
+    placement_group_config: Optional[Dict[str, Any]] = None,
 ):
     """Create a Ray scheduling strategy for the engine.
 
@@ -612,10 +613,26 @@ def _ray_scheduling_strategy_fn(
             bundle[f"accelerator_type:{accelerator_type}"] = 0.001
         return bundle
 
-    pg = ray.util.placement_group(
-        [_get_bundle()] * num_bundles_per_replica,
-        strategy="STRICT_PACK",
-    )
+    if placement_group_config:
+        if (
+            "bundles" not in placement_group_config
+            or "strategy" not in placement_group_config
+        ):
+            raise ValueError("placement_group_config must contain bundles and strategy")
+
+        for bundle in placement_group_config["bundles"]:
+            bundle.setdefault("CPU", 1)
+            bundle.setdefault("GPU", 1)
+
+            if accelerator_type:
+                bundle.setdefault(f"accelerator_type:{accelerator_type}", 0.001)
+
+        pg = ray.util.placement_group(**placement_group_config)
+    else:
+        pg = ray.util.placement_group(
+            [_get_bundle()] * num_bundles_per_replica,
+            strategy="PACK",
+        )
     return dict(
         scheduling_strategy=PlacementGroupSchedulingStrategy(
             pg, placement_group_capture_child_tasks=True
@@ -664,6 +681,9 @@ class vLLMEngineStage(StatefulStage):
         # strategy in .map_batches() arguments and let vLLM Ray executor to
         # create placement groups for each TP/PP worker.
         resources_per_bundle = map_batches_kwargs.pop("resources", None)
+        placement_group_config = fn_constructor_kwargs.get(
+            "placement_group_config", None
+        )
         if executor_backend == "ray" and num_bundles_per_replica > 1:
             # Note that we have to use partial() to pass a function
             # instead of an object.
@@ -672,6 +692,7 @@ class vLLMEngineStage(StatefulStage):
                 num_bundles_per_replica,
                 accelerator_type,
                 resources_per_bundle,
+                placement_group_config,
             )
             ray_remote_args["num_gpus"] = 0
         else:
