@@ -93,6 +93,9 @@ class ChatTemplateUDF(StatefulStageUDF):
         assert len(batch) == len(prompts)
 
         for row, prompt in zip(batch, prompts):
+            # Remove the bulky messages field to keep Arrow columns homogeneous.
+            row.pop("messages", None)
+
             yield {
                 self.IDX_IN_BATCH_COLUMN: row[self.IDX_IN_BATCH_COLUMN],
                 "prompt": prompt,

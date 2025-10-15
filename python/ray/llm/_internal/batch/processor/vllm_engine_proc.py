@@ -136,6 +136,20 @@ def build_vllm_engine_processor(
                 ),
             )
         )
+    if getattr(config, "has_video", False):
+        from ray.llm._internal.batch.stages.prepare_video_stage import (
+            PrepareVideoStage,
+        )
+
+        stages.append(
+            PrepareVideoStage(
+                map_batches_kwargs=dict(
+                    zero_copy_batch=True,
+                    concurrency=config.get_concurrency(),
+                    batch_size=config.batch_size,
+                ),
+            )
+        )
     if config.apply_chat_template:
         stages.append(
             ChatTemplateStage(

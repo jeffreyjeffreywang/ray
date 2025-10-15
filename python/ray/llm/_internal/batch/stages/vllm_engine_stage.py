@@ -54,6 +54,8 @@ class vLLMEngineRequest(BaseModel):
     prompt: str
     # The images inputs for the multimodal model. Use Any to avoid importing PIL.
     images: List[Any]
+    # The videos inputs for the multimodal model.
+    videos: List[Any]
     # The tokenized prompt IDs. If None, then the string prompt will be
     # tokenized by the LLM engine. This is not recommended for performance reasons.
     prompt_token_ids: Optional[List[int]]
@@ -267,10 +269,8 @@ class vLLMEngineWrapper:
         else:
             tokenized_prompt = None
 
-        if "image" in row:
-            image = row.pop("image")
-        else:
-            image = []
+        image = row.pop("image", [])
+        video = row.pop("video", [])
 
         lora_request = await self._maybe_get_lora_request(row)
 
@@ -302,6 +302,7 @@ class vLLMEngineWrapper:
             prompt=prompt,
             prompt_token_ids=tokenized_prompt,
             images=image,
+            videos=video,
             params=params,
             lora_request=lora_request,
         )
@@ -395,6 +396,7 @@ class vLLMEngineWrapper:
         import vllm
 
         multi_modal_data = {"image": request.images} if request.images else None
+        multi_modal_data = {"video": request.videos} if request.videos else None
         llm_prompt = vllm.inputs.data.TextPrompt(
             prompt=request.prompt, multi_modal_data=multi_modal_data
         )
