@@ -2,7 +2,7 @@ import logging
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
-from pydantic import Field, field_validator, root_validator
+from pydantic import Field, field_validator, model_validator, root_validator
 
 import ray
 from ray.data import Dataset
@@ -174,7 +174,8 @@ class OfflineProcessorConfig(ProcessorConfig):
     )
     has_image: bool = Field(
         default=False,
-        description="[DEPRECATED] Prefer `prepare_image_stage`. Whether the input messages have images.",
+        description="[DEPRECATED] Prefer to use multimodal processor to process multimodal data. "
+        "Whether the input messages have images.",
     )
 
     # New nested stage configuration (bool | dict | typed config).
@@ -242,6 +243,16 @@ class OfflineProcessorConfig(ProcessorConfig):
                 values[stage_field] = {"enabled": enabled}
 
         return values
+
+    @model_validator(mode="after")
+    def _warn_deprecated_has_image(self):
+        """Warn if has_image is explicitly set by the user."""
+        if "has_image" in self.model_fields_set:
+            logger.warning(
+                "OfflineProcessorConfig's 'has_image' field is deprecated and will be raise an error in a future version. "
+                "Please use MultimodalProcessor to process multimodal data instead."
+            )
+        return self
 
 
 @PublicAPI(stability="alpha")

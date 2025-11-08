@@ -1,5 +1,5 @@
 """The vLLM engine processor."""
-
+import logging
 from typing import Any, Dict, List, Literal, Optional
 
 import transformers
@@ -25,7 +25,6 @@ from ray.llm._internal.batch.processor.utils import (
 from ray.llm._internal.batch.stages import (
     ChatTemplateStage,
     DetokenizeStage,
-    PrepareImageStage,
     TokenizeStage,
     vLLMEngineStage,
 )
@@ -47,6 +46,7 @@ from ray.llm._internal.common.utils.download_utils import (
 
 DEFAULT_MODEL_ARCHITECTURE = "UNKNOWN_MODEL_ARCHITECTURE"
 
+logger = logging.getLogger(__name__)
 
 class BundleSchema(BaseModelExtended):
     model_config = ConfigDict(extra="allow")
@@ -151,19 +151,6 @@ def build_vllm_engine_processor(
         "runtime_env": config.runtime_env,
         "model_source": config.model_source,
     }
-
-    # Resolve and build PrepareImageStage if enabled
-    image_stage_cfg = resolve_stage_config(
-        config.prepare_image_stage,
-        PrepareImageStageConfig,
-        processor_defaults,
-    )
-    if image_stage_cfg.enabled:
-        stages.append(
-            PrepareImageStage(
-                map_batches_kwargs=build_cpu_stage_map_kwargs(image_stage_cfg),
-            )
-        )
 
     # Resolve and build ChatTemplateStage if enabled
     chat_template_stage_cfg = resolve_stage_config(
