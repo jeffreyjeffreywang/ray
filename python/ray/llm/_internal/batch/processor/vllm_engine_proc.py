@@ -1,5 +1,4 @@
 """The vLLM engine processor."""
-import logging
 from typing import Any, Dict, List, Literal, Optional
 
 import transformers
@@ -45,8 +44,6 @@ from ray.llm._internal.common.utils.download_utils import (
 )
 
 DEFAULT_MODEL_ARCHITECTURE = "UNKNOWN_MODEL_ARCHITECTURE"
-
-logger = logging.getLogger(__name__)
 
 
 class BundleSchema(BaseModelExtended):
