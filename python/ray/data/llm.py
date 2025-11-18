@@ -179,8 +179,9 @@ class vLLMEngineProcessorConfig(_vLLMEngineProcessorConfig):
             ``detokenize`` field is deprecated but still supported.
         prepare_image_stage: Prepare image stage config (bool | dict | PrepareImageStageConfig).
             Defaults to False. Use nested config for per-stage control over batch_size,
-            concurrency, runtime_env, num_cpus, and memory. Legacy ``has_image`` field
-            is deprecated but still supported.
+            concurrency, runtime_env, num_cpus, and memory. Both the legacy ``has_image`` field
+            and ``prepare_image_stage`` are deprecated but still supported. Prefer to use multimodal
+            processor to process multimodal data instead.
         accelerator_type: The accelerator type used by the LLM stage in a processor.
             Default to None, meaning that only the CPU will be used.
         concurrency: The number of workers for data parallelism. Default to 1.

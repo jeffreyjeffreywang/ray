@@ -5,6 +5,7 @@ from ray.llm._internal.batch.stages.base import (
 )
 from ray.llm._internal.batch.stages.chat_template_stage import ChatTemplateStage
 from ray.llm._internal.batch.stages.http_request_stage import HttpRequestStage
+from ray.llm._internal.batch.stages.prepare_image_stage import PrepareImageStage
 from ray.llm._internal.batch.stages.prepare_multimodal_stage import (
     PrepareMultimodalStage,
 )
@@ -16,6 +17,7 @@ from ray.llm._internal.batch.stages.vllm_engine_stage import vLLMEngineStage
 __all__ = [
     "StatefulStage",
     "HttpRequestStage",
+    "PrepareImageStage",
     "PrepareMultimodalStage",
     "ChatTemplateStage",
     "TokenizeStage",

@@ -50,6 +50,19 @@ class DetokenizeStageConfig(_StageConfigBase):
 class PrepareImageStageConfig(_StageConfigBase):
     pass
 
+class PrepareMultimodalStageConfig(_StageConfigBase):
+    model_source: Optional[str] = Field(
+        default=None,
+        description="Name or path of the Hugging Face model to use for the multimodal processor. "
+        "This is required to process multimodal data according to a specific model.",
+    )
+    chat_template_content_format: Optional[str] = Field(
+        default="string",
+        choices=["string", "openai"],
+        description="The content format to use for the chat template. "
+        "This is used to format the chat template content according to a specific model.",
+    )
+
 
 def resolve_stage_config(
     stage_cfg_value: Union[bool, Dict[str, Any], _StageConfigBase],

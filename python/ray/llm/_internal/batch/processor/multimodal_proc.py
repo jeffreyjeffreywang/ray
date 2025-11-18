@@ -14,26 +14,28 @@ from ray.llm._internal.batch.processor.base import (
     ProcessorBuilder,
     ProcessorConfig,
 )
+from ray.llm._internal.batch.processor.utils import (
+    build_cpu_stage_map_kwargs,
+)
 from ray.llm._internal.batch.stages import PrepareMultimodalStage
+from ray.llm._internal.batch.stages.configs import (
+    PrepareMultimodalStageConfig,
+    resolve_stage_config,
+)
 
 
 class MultimodalProcessorConfig(ProcessorConfig):
     """The configuration for the multimodal processor."""
 
-    model: str = Field(
+    model_source: str = Field(
         description="Name or path of the Hugging Face model to use for the multimodal processor. "
         "This is required to process multimodal data according to a specific model.",
     )
-    # The format to render message content.
-    #   - "string" will render the content as a string.
-    #     Example: `"Who are you?"`
-    #   - "openai" will render the content as a list of dictionaries, similar to OpenAI schema.
-    #     Example: `[{"type": "text", "text": "Who are you?"}]`
-    chat_template_content_format: str = Field(
-        default="string",
-        choices=["string", "openai"],
-        description="The content format to use for the chat template. "
-        "This is used to format the chat template content according to a specific model.",
+
+    # Nested stage configurations
+    prepare_multimodal_stage: Any = Field(
+        default=True,
+        description="Prepare multimodal stage config (bool | dict | PrepareMultimodalStageConfig).",
     )
 
 
@@ -61,19 +63,33 @@ def build_multimodal_processor(
     Returns:
         The constructed processor.
     """
-    stages = [
-        PrepareMultimodalStage(
-            fn_constructor_kwargs=dict(
-                model=config.model,
-                chat_template_content_format=config.chat_template_content_format,
-            ),
-            map_batches_kwargs=dict(
-                zero_copy_batch=True,
-                concurrency=config.concurrency,
-                batch_size=config.batch_size,
-            ),
-        ),
-    ]
+    # Prepare processor defaults for merging into stage configs
+    processor_defaults = {
+        "batch_size": config.batch_size,
+        "concurrency": config.concurrency,
+        "model_source": config.model_source,
+    }
+
+    prepare_multimodal_stage_cfg = resolve_stage_config(
+        config.prepare_multimodal_stage,
+        PrepareMultimodalStageConfig,
+        processor_defaults,
+    )
+
+    stages = []
+    if prepare_multimodal_stage_cfg.enabled:
+        stages.append(
+            PrepareMultimodalStage(
+                fn_constructor_kwargs=dict(
+                    model=prepare_multimodal_stage_cfg.model_source,
+                    chat_template_content_format=prepare_multimodal_stage_cfg.chat_template_content_format,
+                ),
+                map_batches_kwargs=build_cpu_stage_map_kwargs(
+                    prepare_multimodal_stage_cfg
+                ),
+            )
+        )
+
     telemetry_agent = get_or_create_telemetry_agent()
     telemetry_agent.push_telemetry_report(
         BatchModelTelemetry(

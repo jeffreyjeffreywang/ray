@@ -1,8 +1,9 @@
 import logging
+import warnings
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
-from pydantic import Field, field_validator, model_validator, root_validator
+from pydantic import Field, field_validator, model_validator
 
 import ray
 from ray.data import Dataset
@@ -174,7 +175,7 @@ class OfflineProcessorConfig(ProcessorConfig):
     )
     has_image: bool = Field(
         default=False,
-        description="[DEPRECATED] Prefer to use multimodal processor to process multimodal data. "
+        description="[DEPRECATED] Prefer `prepare_multimodal_stage` for processing multimodal data. "
         "Whether the input messages have images.",
     )
 
@@ -193,10 +194,10 @@ class OfflineProcessorConfig(ProcessorConfig):
     )
     prepare_image_stage: Any = Field(
         default=False,
-        description="Prepare image stage config (bool | dict | PrepareImageStageConfig).",
+        description="[DEPRECATED] Prefer `prepare_multimodal_stage` for processing multimodal data. Prepare image stage config (bool | dict | PrepareImageStageConfig).",
     )
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
     def _coerce_legacy_to_stage_config(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         # Only set stage fields if not explicitly provided.
         # Emit deprecation warnings when legacy boolean flags are used.
@@ -204,13 +205,15 @@ class OfflineProcessorConfig(ProcessorConfig):
         # Chat template stage: special case (handles both apply_chat_template and chat_template fields)
         if "chat_template_stage" not in values:
             if "apply_chat_template" in values or "chat_template" in values:
-                logger.warning(
+                message = (
                     "The `apply_chat_template` and `chat_template` fields are deprecated. "
                     "Use `chat_template_stage` instead. For example: "
                     "`chat_template_stage=ChatTemplateStageConfig(enabled=True, chat_template='...')` "
                     "or `chat_template_stage={'enabled': True, 'chat_template': '...'}`. "
                     "This will raise an error in a future version."
                 )
+                logger.warning(message)
+                warnings.warn(message, UserWarning, stacklevel=2)
                 enabled_value = values.get("apply_chat_template")
                 enabled = enabled_value if enabled_value is not None else True
                 stage: Dict[str, Any] = {"enabled": enabled}
@@ -231,28 +234,20 @@ class OfflineProcessorConfig(ProcessorConfig):
             config_class_name,
         ) in stage_mappings:
             if stage_field not in values and legacy_field in values:
-                logger.warning(
+                message = (
                     f"The `{legacy_field}` field is deprecated. "
                     f"Use `{stage_field}` instead. For example: "
                     f"`{stage_field}={config_class_name}(enabled=True)` "
                     f"or `{stage_field}={{'enabled': True}}`. "
                     "This will raise an error in a future version."
                 )
+                logger.warning(message)
+                warnings.warn(message, UserWarning, stacklevel=2)
                 legacy_value = values.get(legacy_field)
                 enabled = default_enabled if legacy_value is None else legacy_value
                 values[stage_field] = {"enabled": enabled}
 
         return values
-
-    @model_validator(mode="after")
-    def _warn_deprecated_has_image(self):
-        """Warn if has_image is explicitly set by the user."""
-        if "has_image" in self.model_fields_set:
-            logger.warning(
-                "OfflineProcessorConfig's 'has_image' field is deprecated and will be raise an error in a future version. "
-                "Please use MultimodalProcessor to process multimodal data instead."
-            )
-        return self
 
 
 @PublicAPI(stability="alpha")

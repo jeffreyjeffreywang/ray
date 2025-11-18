@@ -351,15 +351,23 @@ class vLLMEngineWrapper:
         # performance. Given that v1 tokenizer and detokenizer are already
         # in a separate process, the benefit of decoupling them in the Processor
         # may be limited.
-        assert request.prompt
         import vllm
 
-        llm_prompt = vllm.inputs.data.TextPrompt(
-            prompt=request.prompt,
-            multi_modal_data=request.multimodal_data,
-            mm_processor_kwargs=request.mm_processor_kwargs,
-            multi_modal_uuids=request.multimodal_uuids,
-        )
+        if request.prompt_token_ids is not None:
+            llm_prompt = vllm.inputs.data.TokensPrompt(
+                prompt_token_ids=request.prompt_token_ids,
+                multi_modal_data=request.multimodal_data,
+                mm_processor_kwargs=request.mm_processor_kwargs,
+                multi_modal_uuids=request.multimodal_uuids,
+            )
+        else:
+            assert request.prompt
+            llm_prompt = vllm.inputs.data.TextPrompt(
+                prompt=request.prompt,
+                multi_modal_data=request.multimodal_data,
+                mm_processor_kwargs=request.mm_processor_kwargs,
+                multi_modal_uuids=request.multimodal_uuids,
+            )
 
         # Send the request to the LLM engine.
         stream = self.engine.generate(

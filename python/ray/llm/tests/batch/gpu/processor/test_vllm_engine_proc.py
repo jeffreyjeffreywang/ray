@@ -14,6 +14,7 @@ from ray.llm._internal.batch.stages.configs import (
     ChatTemplateStageConfig,
     DetokenizeStageConfig,
     PrepareImageStageConfig,
+    PrepareMultimodalStageConfig,
     TokenizerStageConfig,
 )
 
@@ -36,9 +37,11 @@ def test_vllm_engine_processor(gpu_type, model_opt_125m):
         chat_template_stage=ChatTemplateStageConfig(enabled=True),
         tokenize_stage=TokenizerStageConfig(enabled=True),
         detokenize_stage=DetokenizeStageConfig(enabled=True),
+        prepare_image_stage=PrepareImageStageConfig(enabled=True),
     )
     processor = ProcessorBuilder.build(config)
     assert processor.list_stage_names() == [
+        "PrepareImageStage",
         "ChatTemplateStage",
         "TokenizeStage",
         "vLLMEngineStage",
@@ -139,10 +142,11 @@ def test_generation_model(gpu_type, model_opt_125m, backend):
         batch_size=16,
         accelerator_type=gpu_type,
         concurrency=1,
-        apply_chat_template=True,
-        chat_template=chat_template,
-        tokenize=True,
-        detokenize=True,
+        chat_template_stage=ChatTemplateStageConfig(
+            enabled=True, chat_template=chat_template
+        ),
+        tokenize_stage=TokenizerStageConfig(enabled=True),
+        detokenize_stage=DetokenizeStageConfig(enabled=True),
     )
 
     processor = build_llm_processor(
@@ -186,10 +190,9 @@ def test_embedding_model(gpu_type, model_smolvlm_256m):
         batch_size=16,
         accelerator_type=gpu_type,
         concurrency=1,
-        apply_chat_template=True,
-        chat_template=None,
-        tokenize=True,
-        detokenize=False,
+        chat_template_stage=ChatTemplateStageConfig(enabled=True),
+        tokenize_stage=TokenizerStageConfig(enabled=True),
+        detokenize_stage=DetokenizeStageConfig(enabled=False),
     )
 
     processor = build_llm_processor(
@@ -217,11 +220,17 @@ def test_embedding_model(gpu_type, model_smolvlm_256m):
 
 
 @pytest.mark.parametrize("input_raw_image_data", [True, False])
-def test_vision_model(gpu_type, model_smolvlm_256m, image_asset, input_raw_image_data):
+@pytest.mark.parametrize("decouple_tokenizer", [True, False])
+def test_vision_model(
+    gpu_type, model_smolvlm_256m, image_asset, input_raw_image_data, decouple_tokenizer
+):
     image_url, image_pil = image_asset
     multimodal_processor_config = MultimodalProcessorConfig(
-        model=model_smolvlm_256m,
-        chat_template_content_format="openai",
+        model_source=model_smolvlm_256m,
+        prepare_multimodal_stage=PrepareMultimodalStageConfig(
+            enabled=True,
+            chat_template_content_format="openai",
+        ),
         concurrency=1,
     )
     multimodal_processor = build_llm_processor(
@@ -263,18 +272,12 @@ def test_vision_model(gpu_type, model_smolvlm_256m, image_asset, input_raw_image
             dtype="half",
             limit_mm_per_prompt={"image": 1},
         ),
-        # CI uses T4 GPU which is not supported by vLLM v1 FlashAttn.
-        runtime_env=dict(
-            env_vars=dict(
-                VLLM_USE_V1="0",
-            ),
-        ),
-        apply_chat_template=True,
-        tokenize=False,
-        detokenize=False,
         batch_size=16,
         accelerator_type=gpu_type,
         concurrency=1,
+        chat_template_stage=ChatTemplateStageConfig(enabled=True),
+        tokenize_stage=TokenizerStageConfig(enabled=decouple_tokenizer),
+        detokenize_stage=DetokenizeStageConfig(enabled=decouple_tokenizer),
     )
 
     llm_processor = build_llm_processor(
@@ -283,6 +286,7 @@ def test_vision_model(gpu_type, model_smolvlm_256m, image_asset, input_raw_image
             sampling_params=dict(
                 temperature=0.3,
                 max_tokens=50,
+                detokenize=not decouple_tokenizer,
             ),
         ),
         postprocess=lambda row: {
@@ -301,7 +305,11 @@ def test_vision_model(gpu_type, model_smolvlm_256m, image_asset, input_raw_image
 
 def test_video_model(gpu_type, model_qwen_2_5_vl_3b_instruct):
     multimodal_processor_config = MultimodalProcessorConfig(
-        model=model_qwen_2_5_vl_3b_instruct,
+        model_source=model_qwen_2_5_vl_3b_instruct,
+        prepare_multimodal_stage=PrepareMultimodalStageConfig(
+            enabled=True,
+            chat_template_content_format="openai",
+        ),
         concurrency=1,
     )
     multimodal_processor = build_llm_processor(
@@ -336,12 +344,12 @@ def test_video_model(gpu_type, model_qwen_2_5_vl_3b_instruct):
             # Limit the number of videos that can be provided per prompt to prevent memory issues
             limit_mm_per_prompt={"video": 1},
         ),
-        apply_chat_template=True,
-        tokenize=False,
-        detokenize=False,
         batch_size=16,
         accelerator_type=gpu_type,
         concurrency=1,
+        chat_template_stage=ChatTemplateStageConfig(enabled=True),
+        tokenize_stage=TokenizerStageConfig(enabled=False),
+        detokenize_stage=DetokenizeStageConfig(enabled=False),
     )
 
     llm_processor = build_llm_processor(
@@ -377,8 +385,11 @@ def test_audio_model(
 ):
     audio_url, audio_data = audio_asset
     multimodal_processor_config = MultimodalProcessorConfig(
-        model=model_qwen_2_5_omni_3b,
-        chat_template_content_format="openai",
+        model_source=model_qwen_2_5_omni_3b,
+        prepare_multimodal_stage=PrepareMultimodalStageConfig(
+            enabled=True,
+            chat_template_content_format="openai",
+        ),
         concurrency=1,
     )
     multimodal_processor = build_llm_processor(
@@ -415,12 +426,12 @@ def test_audio_model(
             enforce_eager=True,
             limit_mm_per_prompt={"audio": 1},
         ),
-        apply_chat_template=True,
-        tokenize=False,
-        detokenize=False,
         batch_size=16,
         accelerator_type=gpu_type,
         concurrency=1,
+        chat_template_stage=ChatTemplateStageConfig(enabled=True),
+        tokenize_stage=TokenizerStageConfig(enabled=False),
+        detokenize_stage=DetokenizeStageConfig(enabled=False),
     )
 
     llm_processor = build_llm_processor(

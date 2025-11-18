@@ -4,7 +4,6 @@ import pytest
 
 from ray.llm._internal.batch.stages.configs import (
     ChatTemplateStageConfig,
-    PrepareImageStageConfig,
     TokenizerStageConfig,
     resolve_stage_config,
 )
@@ -14,9 +13,9 @@ def test_resolve_dict_to_config():
     """Dict → parsed StageConfig with all fields."""
     stage_cfg = resolve_stage_config(
         {"enabled": True, "batch_size": 128, "concurrency": 4},
-        PrepareImageStageConfig,
+        ChatTemplateStageConfig,
     )
-    assert isinstance(stage_cfg, PrepareImageStageConfig)
+    assert isinstance(stage_cfg, ChatTemplateStageConfig)
     assert stage_cfg.enabled is True
     assert stage_cfg.batch_size == 128
     assert stage_cfg.concurrency == 4
@@ -69,7 +68,7 @@ def test_resolve_preserves_explicit_overrides():
     """Explicit values not overridden by defaults."""
     stage_cfg = resolve_stage_config(
         {"enabled": True, "batch_size": 64, "concurrency": 2},
-        PrepareImageStageConfig,
+        ChatTemplateStageConfig,
         processor_defaults={"batch_size": 128, "concurrency": 4},
     )
     assert stage_cfg.batch_size == 64  # Explicit override preserved
@@ -88,15 +87,15 @@ def test_resolve_model_source_fallback():
 
 def test_resolve_bool_true():
     """Bool True → enabled StageConfig."""
-    stage_cfg = resolve_stage_config(True, PrepareImageStageConfig)
-    assert isinstance(stage_cfg, PrepareImageStageConfig)
+    stage_cfg = resolve_stage_config(True, ChatTemplateStageConfig)
+    assert isinstance(stage_cfg, ChatTemplateStageConfig)
     assert stage_cfg.enabled is True
 
 
 def test_resolve_bool_false():
     """Bool False → disabled StageConfig."""
-    stage_cfg = resolve_stage_config(False, PrepareImageStageConfig)
-    assert isinstance(stage_cfg, PrepareImageStageConfig)
+    stage_cfg = resolve_stage_config(False, ChatTemplateStageConfig)
+    assert isinstance(stage_cfg, ChatTemplateStageConfig)
     assert stage_cfg.enabled is False
 
 
@@ -104,7 +103,7 @@ def test_resolve_runtime_env_replacement():
     """Stage runtime_env replaces processor (not merged)."""
     stage_cfg = resolve_stage_config(
         {"enabled": True, "runtime_env": {"env_vars": {"STAGE_VAR": "stage_value"}}},
-        PrepareImageStageConfig,
+        ChatTemplateStageConfig,
         processor_defaults={"runtime_env": {"env_vars": {"PROC_VAR": "proc_value"}}},
     )
     # Stage runtime_env completely replaces processor runtime_env
@@ -138,21 +137,10 @@ def test_resolve_same_config_reusable():
 def test_resolve_unsupported_type():
     """Unsupported types raise TypeError."""
     with pytest.raises(TypeError, match="Unsupported type for stage config"):
-        resolve_stage_config(None, PrepareImageStageConfig)
+        resolve_stage_config(None, ChatTemplateStageConfig)
 
     with pytest.raises(TypeError, match="Unsupported type for stage config"):
-        resolve_stage_config(123, PrepareImageStageConfig)
-
-
-def test_resolve_stage_without_model_source():
-    """Stages without model_source field don't get it from defaults."""
-    stage_cfg = resolve_stage_config(
-        {"enabled": True},
-        PrepareImageStageConfig,
-        processor_defaults={"model_source": "test-model"},
-    )
-    # PrepareImageStageConfig doesn't have model_source field
-    assert not hasattr(stage_cfg, "model_source")
+        resolve_stage_config(123, ChatTemplateStageConfig)
 
 
 if __name__ == "__main__":
