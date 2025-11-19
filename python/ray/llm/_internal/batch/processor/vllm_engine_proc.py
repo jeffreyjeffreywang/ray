@@ -195,7 +195,7 @@ def build_vllm_engine_processor(
     )
     if tokenize_stage_cfg.enabled:
         stages.append(
-            ChatTemplateStage(
+            TokenizeStage(
                 fn_constructor_kwargs=dict(
                     model=tokenize_stage_cfg.model_source,
                 ),

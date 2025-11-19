@@ -50,6 +50,7 @@ class DetokenizeStageConfig(_StageConfigBase):
 class PrepareImageStageConfig(_StageConfigBase):
     pass
 
+
 class PrepareMultimodalStageConfig(_StageConfigBase):
     model_source: Optional[str] = Field(
         default=None,
