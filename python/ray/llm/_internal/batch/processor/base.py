@@ -1,5 +1,4 @@
 import logging
-import warnings
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
@@ -205,15 +204,13 @@ class OfflineProcessorConfig(ProcessorConfig):
         # Chat template stage: special case (handles both apply_chat_template and chat_template fields)
         if "chat_template_stage" not in values:
             if "apply_chat_template" in values or "chat_template" in values:
-                message = (
+                logger.warning(
                     "The `apply_chat_template` and `chat_template` fields are deprecated. "
                     "Use `chat_template_stage` instead. For example: "
                     "`chat_template_stage=ChatTemplateStageConfig(enabled=True, chat_template='...')` "
                     "or `chat_template_stage={'enabled': True, 'chat_template': '...'}`. "
                     "This will raise an error in a future version."
                 )
-                logger.warning(message)
-                warnings.warn(message, UserWarning, stacklevel=2)
                 enabled_value = values.get("apply_chat_template")
                 enabled = enabled_value if enabled_value is not None else True
                 stage: Dict[str, Any] = {"enabled": enabled}
@@ -234,15 +231,13 @@ class OfflineProcessorConfig(ProcessorConfig):
             config_class_name,
         ) in stage_mappings:
             if stage_field not in values and legacy_field in values:
-                message = (
+                logger.warning(
                     f"The `{legacy_field}` field is deprecated. "
                     f"Use `{stage_field}` instead. For example: "
                     f"`{stage_field}={config_class_name}(enabled=True)` "
                     f"or `{stage_field}={{'enabled': True}}`. "
                     "This will raise an error in a future version."
                 )
-                logger.warning(message)
-                warnings.warn(message, UserWarning, stacklevel=2)
                 legacy_value = values.get(legacy_field)
                 enabled = default_enabled if legacy_value is None else legacy_value
                 values[stage_field] = {"enabled": enabled}

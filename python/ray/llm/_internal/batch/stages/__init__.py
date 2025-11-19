@@ -17,7 +17,6 @@ from ray.llm._internal.batch.stages.vllm_engine_stage import vLLMEngineStage
 __all__ = [
     "StatefulStage",
     "HttpRequestStage",
-    "PrepareImageStage",
     "PrepareMultimodalStage",
     "ChatTemplateStage",
     "TokenizeStage",
@@ -27,4 +26,5 @@ __all__ = [
     "ServeDeploymentStage",
     "wrap_preprocess",
     "wrap_postprocess",
+    "PrepareImageStage",
 ]

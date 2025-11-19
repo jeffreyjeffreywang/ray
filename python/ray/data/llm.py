@@ -95,14 +95,10 @@ class MultimodalProcessorConfig(_MultimodalProcessorConfig):
     """The configuration for the multimodal processor.
 
     Args:
-        model: Name or path of the Hugging Face model to use for the multimodal processor.
-        batch_size: The batch size to send to the multimodal processor.
-        concurrency: The number of workers for data parallelism. Default to 1.
-            If ``concurrency`` is a ``tuple`` ``(m, n)``, Ray creates an autoscaling
-            actor pool that scales between ``m`` and ``n`` workers (``1 <= m <= n``).
-            If ``concurrency`` is an ``int`` ``n``, Ray uses either a fixed pool of ``n``
-            workers or an autoscaling pool from ``1`` to ``n`` workers, depending on
-            the processor and stage.
+        model_source: Name or path of the Hugging Face model to use for the multimodal processor.
+        prepare_multimodal_stage: Prepare multimodal stage config (bool | dict | PrepareMultimodalStageConfig).
+            Defaults to True. Use nested config for per-stage control over batch_size,
+            concurrency, num_cpus, and memory.
 
     Examples:
         .. testcode::
@@ -110,9 +106,13 @@ class MultimodalProcessorConfig(_MultimodalProcessorConfig):
 
             import ray
             from ray.data.llm import MultimodalProcessorConfig, build_llm_processor
+            from ray.llm._internal.batch.stages.configs import PrepareMultimodalStageConfig
 
             config = MultimodalProcessorConfig(
-                model="Qwen/Qwen2.5-VL-3B-Instruct",
+                model_source="Qwen/Qwen2.5-VL-3B-Instruct",
+                prepare_multimodal_stage=PrepareMultimodalStageConfig(
+                    enabled=True,
+                ),
                 concurrency=1,
             )
             processor = build_llm_processor(
