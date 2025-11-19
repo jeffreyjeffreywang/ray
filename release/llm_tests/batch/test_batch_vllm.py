@@ -10,6 +10,7 @@ from ray.data.llm import (
     MultimodalProcessorConfig,
     vLLMEngineProcessorConfig,
 )
+from ray.llm._internal.batch.stages.configs import PrepareMultimodalStageConfig
 
 logger = logging.getLogger(__name__)
 
@@ -269,7 +270,6 @@ def test_vllm_llama_lora():
         # LLaVA model with TP=1, PP=1, concurrency=1
         ("llava-hf/llava-1.5-7b-hf", 1, 1, 1, 60, "openai"),
         # Pixtral model with TP=2, PP=1, concurrency=2
-        # TODO (jeffreywang): Run this test
         ("mistral-community/pixtral-12b", 2, 1, 2, 60, "openai"),
     ],
 )
@@ -290,8 +290,11 @@ def test_vllm_vision_language_models(
     detokenize = False
 
     multimodal_processor_config = MultimodalProcessorConfig(
-        model=model_source,
-        chat_template_content_format=chat_template_content_format,
+        model_source=model_source,
+        prepare_multimodal_stage=PrepareMultimodalStageConfig(
+            enabled=True,
+            chat_template_content_format=chat_template_content_format,
+        ),
         concurrency=concurrency,
     )
     multimodal_processor = build_llm_processor(
@@ -322,7 +325,10 @@ def test_vllm_vision_language_models(
         model_source=model_source,
         task_type="generate",
         engine_kwargs=dict(
-            enforce_eager=True,
+            tensor_parallel_size=tp_size,
+            pipeline_parallel_size=pp_size,
+            max_model_len=4096,
+            enable_chunked_prefill=True,
         ),
         apply_chat_template=True,
         tokenize=tokenize,
@@ -375,7 +381,10 @@ def test_vllm_qwen_vl_multimodal(multimodal_content):
     detokenize = False
 
     multimodal_processor_config = MultimodalProcessorConfig(
-        model=model_source,
+        model_source=model_source,
+        prepare_multimodal_stage=PrepareMultimodalStageConfig(
+            enabled=True,
+        ),
         concurrency=1,
     )
     multimodal_processor = build_llm_processor(
