@@ -3,10 +3,8 @@
 import asyncio
 from typing import Any, AsyncIterator, Dict, List
 
-from vllm.config import ModelConfig
-from vllm.entrypoints.chat_utils import parse_chat_messages_futures
-
 from ray.llm._internal.batch.stages.base import StatefulStage, StatefulStageUDF
+# from vllm.v1.engine.processor import Processor
 
 
 class PrepareMultimodalUDF(StatefulStageUDF):
@@ -16,6 +14,7 @@ class PrepareMultimodalUDF(StatefulStageUDF):
         expected_input_keys: List[str],
         model: str,
         chat_template_content_format: str,
+        # enable_preprocess: bool = True,
     ):
         """
         Initialize the PrepareMultimodalUDF.
@@ -26,9 +25,15 @@ class PrepareMultimodalUDF(StatefulStageUDF):
             model: The model to use for the multimodal processor.
             chat_template_content_format: The format to render message content.
         """
+        from vllm.config import ModelConfig, VllmConfig
+
         super().__init__(data_column, expected_input_keys)
         self.model_config = ModelConfig(model=model)
+        self.vllm_config = VllmConfig(
+            model_config=self.model_config,
+        )
         self.chat_template_content_format = chat_template_content_format
+        # self.processor = Processor(self.vllm_config, None)
 
     async def udf(self, batch: List[Dict[str, Any]]) -> AsyncIterator[Dict[str, Any]]:
         """
@@ -41,6 +46,8 @@ class PrepareMultimodalUDF(StatefulStageUDF):
             Dict[str, Any]: A dictionary containing the multimodal data
             along with processing metadata.
         """
+        from vllm.entrypoints.chat_utils import parse_chat_messages_futures
+
         conversations, futures, uuids = [], [], []
         for row in batch:
             # Users can provide stable IDs for each multimodal item from messages to
@@ -54,6 +61,12 @@ class PrepareMultimodalUDF(StatefulStageUDF):
             conversations.append(conversation)
             futures.append(mm_data_future)
             uuids.append(mm_uuids)
+
+            # request: EngineCoreRequest = self.processor.process_inputs(
+            #     request_id,
+            #     prompt,
+            #     params,
+            # )
 
         async def _get_mm_with_idx(idx: int, fut):
             multimodal_data = await fut

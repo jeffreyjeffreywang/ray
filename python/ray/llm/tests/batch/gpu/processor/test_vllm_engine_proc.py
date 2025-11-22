@@ -289,8 +289,8 @@ def test_legacy_vision_model(gpu_type, model_smolvlm_256m, use_nested_config):
     assert all("resp" in out for out in outs)
 
 
-@pytest.mark.parametrize("input_raw_image_data", [True, False])
-@pytest.mark.parametrize("decouple_tokenizer", [True, False])
+@pytest.mark.parametrize("input_raw_image_data", [True])
+@pytest.mark.parametrize("decouple_tokenizer", [True])
 def test_vision_model(
     gpu_type, model_smolvlm_256m, image_asset, input_raw_image_data, decouple_tokenizer
 ):

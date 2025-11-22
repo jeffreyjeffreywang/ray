@@ -13,7 +13,7 @@ clang_format() {
 pre_commit() {
   # Run pre-commit on all files
   # TODO(MortalHappiness): Run all pre-commit checks because currently we only run some of them.
-  pip install -c python/requirements_compiled.txt pre-commit clang-format
+  pip install -c python/requirements_compiled.txt pre-commit clang-format --break-system-packages
 
   HOOKS=(
     python-no-log-warn
@@ -48,7 +48,7 @@ pre_commit() {
 
 pre_commit_pydoclint() {
   # Run pre-commit pydoclint on all files
-  pip install -c python/requirements_compiled.txt pre-commit clang-format
+  pip install -c python/requirements_compiled.txt pre-commit clang-format --break-system-packages
   pre-commit run pydoclint --hook-stage manual --all-files --show-diff-on-failure
   git diff --quiet -- ci/lint/pydoclint-baseline.txt || {
   echo "Baseline needs update. Run the CI-style hook: \"pre-commit run pydoclint --hook-stage manual --all-files --show-diff-on-failure\" locally and commit the baseline."

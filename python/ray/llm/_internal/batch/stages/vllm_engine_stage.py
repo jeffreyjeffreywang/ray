@@ -205,6 +205,12 @@ class vLLMEngineWrapper:
         else:
             self.semaphore = asyncio.NullContext()
 
+        from vllm.transformers_utils.tokenizer import init_tokenizer_from_configs
+        tokenizer = init_tokenizer_from_configs(self._vllm_config.model_config)
+
+        from vllm.v1.engine.processor import Processor
+        self.processor = Processor(self._vllm_config, tokenizer)
+
     async def _maybe_get_lora_request(
         self,
         row: Dict[str, Any],
@@ -383,10 +389,20 @@ class vLLMEngineWrapper:
                 multi_modal_uuids=request.multimodal_uuids,
             )
 
+        # Perform multimodal processing separately from the core engine
+        from vllm.v1.engine import EngineCoreRequest
+        engine_core_request: EngineCoreRequest = self.processor.process_inputs(
+            request_id=str(request.request_id),
+            prompt=llm_prompt,
+            params=request.params,
+        )
+
         # Send the request to the LLM engine.
         stream = self.engine.generate(
             request_id=str(request.request_id),
-            prompt=llm_prompt,
+            # NOTE (jeffreywang): To bypass multimodal processing in the core engine, provide EngineCoreRequest instead of PromptType.
+            #                     We can create EngineCoreRequest from processor.process_inputs()
+            prompt=engine_core_request,
             sampling_params=request.params,
         )
 
