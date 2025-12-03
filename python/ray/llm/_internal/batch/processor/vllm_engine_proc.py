@@ -26,11 +26,13 @@ from ray.llm._internal.batch.stages import (
     ChatTemplateStage,
     DetokenizeStage,
     PrepareImageStage,
+    MultimodalProcessingStage,
     TokenizeStage,
     vLLMEngineStage,
 )
 from ray.llm._internal.batch.stages.configs import (
     ChatTemplateStageConfig,
+    MultimodalProcessingStageConfig,
     DetokenizeStageConfig,
     PrepareImageStageConfig,
     TokenizerStageConfig,
@@ -187,6 +189,20 @@ def build_vllm_engine_processor(
                 map_batches_kwargs=build_cpu_stage_map_kwargs(chat_template_stage_cfg),
             )
         )
+
+    # Resolve and build MultimodalProcessingStage if enabled
+    multimodal_processing_stage_cfg = resolve_stage_config(
+        getattr(config, "multimodal_processing_stage", False),
+        MultimodalProcessingStageConfig,
+        processor_defaults,
+    )
+    if multimodal_processing_stage_cfg.enabled:
+        stages.append(MultimodalProcessingStage(
+            fn_constructor_kwargs=dict(
+                model=multimodal_processing_stage_cfg.model_source,
+            ),
+            map_batches_kwargs=build_cpu_stage_map_kwargs(multimodal_processing_stage_cfg),
+        ))
 
     # Resolve and build TokenizeStage if enabled
     tokenize_stage_cfg = resolve_stage_config(

@@ -35,6 +35,13 @@ class ChatTemplateStageConfig(_StageConfigBase):
     chat_template_kwargs: Optional[Dict[str, Any]] = Field(default=None)
 
 
+class MultimodalProcessingStageConfig(_StageConfigBase):
+    model_source: Optional[str] = Field(
+        default=None,
+        description="Name or path of the Hugging Face model to use for the multimodal processor. "
+        "This is required to process multimodal data according to a specific model.",
+    )
+
 class TokenizerStageConfig(_StageConfigBase):
     model_source: Optional[str] = Field(
         default=None, description="Model source/identifier for this stage."

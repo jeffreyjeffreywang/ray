@@ -15,6 +15,7 @@ from ray.llm._internal.batch.stages.configs import (
     DetokenizeStageConfig,
     PrepareImageStageConfig,
     PrepareMultimodalStageConfig,
+    MultimodalProcessingStageConfig,
     TokenizerStageConfig,
 )
 
@@ -346,6 +347,7 @@ def test_vision_model(
         accelerator_type=gpu_type,
         concurrency=1,
         chat_template_stage=ChatTemplateStageConfig(enabled=True),
+        multimodal_processing_stage=MultimodalProcessingStageConfig(enabled=True),
         tokenize_stage=TokenizerStageConfig(enabled=decouple_tokenizer),
         detokenize_stage=DetokenizeStageConfig(enabled=decouple_tokenizer),
     )

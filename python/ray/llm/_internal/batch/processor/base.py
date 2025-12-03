@@ -183,6 +183,10 @@ class OfflineProcessorConfig(ProcessorConfig):
         default=True,
         description="Chat templating stage config (bool | dict | ChatTemplateStageConfig).",
     )
+    multimodal_processing_stage: Any = Field(
+        default=False,
+        description="Multimodal processing stage config (bool | dict | MultimodalProcessingStageConfig).",
+    )
     tokenize_stage: Any = Field(
         default=True,
         description="Tokenizer stage config (bool | dict | TokenizerStageConfig).",
@@ -220,6 +224,7 @@ class OfflineProcessorConfig(ProcessorConfig):
 
         # Other stages: simple boolean-to-stage mapping
         stage_mappings = [
+            ("multimodal_processing_stage", "multimodal_processing", False, "MultimodalProcessingStageConfig"),
             ("tokenize_stage", "tokenize", True, "TokenizerStageConfig"),
             ("detokenize_stage", "detokenize", True, "DetokenizeStageConfig"),
             ("prepare_image_stage", "has_image", False, "PrepareImageStageConfig"),

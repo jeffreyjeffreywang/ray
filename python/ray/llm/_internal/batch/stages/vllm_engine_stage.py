@@ -73,6 +73,8 @@ class vLLMEngineRequest(BaseModel):
     params: Any
     # LoRA request.
     lora_request: Optional[Any] = None
+    # Pre-assembled engine core request (created in multimodal_processing_stage).
+    engine_core_request: Optional[Any] = None
 
     class Config:
         validate_assignment = True
@@ -290,6 +292,7 @@ class vLLMEngineWrapper:
         # these kwargs are not needed in the vLLM engine stage.
         mm_processor_kwargs = row.pop("mm_processor_kwargs", None)
         multimodal_uuids = row.pop("multimodal_uuids", None)
+        engine_core_request = row.pop("engine_core_request", None)
 
         lora_request = await self._maybe_get_lora_request(row)
 
@@ -326,6 +329,7 @@ class vLLMEngineWrapper:
             multimodal_uuids=multimodal_uuids,
             params=params,
             lora_request=lora_request,
+            engine_core_request=engine_core_request,
         )
         self.request_id += 1
         return request
@@ -364,38 +368,44 @@ class vLLMEngineWrapper:
 
         import vllm
 
-        if request.images:
-            multi_modal_data = (
-                {**request.multimodal_data, "image": request.images}
-                if request.multimodal_data
-                else {"image": request.images}
-            )
-        else:
-            multi_modal_data = request.multimodal_data
+        # Use pre-assembled engine_core_request if available, otherwise create it
+        # if request.engine_core_request is not None:
+        #     engine_core_request = request.engine_core_request
+        # else:
+        #     # Fallback: create engine_core_request if it wasn't created in multimodal_processing_stage
+        #     if request.images:
+        #         multi_modal_data = (
+        #             {**request.multimodal_data, "image": request.images}
+        #             if request.multimodal_data
+        #             else {"image": request.images}
+        #         )
+        #     else:
+        #         multi_modal_data = request.multimodal_data
 
-        if request.prompt_token_ids is not None:
-            llm_prompt = vllm.inputs.data.TokensPrompt(
-                prompt_token_ids=request.prompt_token_ids,
-                multi_modal_data=multi_modal_data,
-                mm_processor_kwargs=request.mm_processor_kwargs,
-                multi_modal_uuids=request.multimodal_uuids,
-            )
-        else:
-            assert request.prompt
-            llm_prompt = vllm.inputs.data.TextPrompt(
-                prompt=request.prompt,
-                multi_modal_data=multi_modal_data,
-                mm_processor_kwargs=request.mm_processor_kwargs,
-                multi_modal_uuids=request.multimodal_uuids,
-            )
+        #     if request.prompt_token_ids is not None:
+        #         llm_prompt = vllm.inputs.data.TokensPrompt(
+        #             prompt_token_ids=request.prompt_token_ids,
+        #             multi_modal_data=multi_modal_data,
+        #             mm_processor_kwargs=request.mm_processor_kwargs,
+        #             multi_modal_uuids=request.multimodal_uuids,
+        #         )
+        #     else:
+        #         assert request.prompt
+        #         llm_prompt = vllm.inputs.data.TextPrompt(
+        #             prompt=request.prompt,
+        #             multi_modal_data=multi_modal_data,
+        #             mm_processor_kwargs=request.mm_processor_kwargs,
+        #             multi_modal_uuids=request.multimodal_uuids,
+        #         )
 
-        # Perform multimodal processing separately from the core engine
-        from vllm.v1.engine import EngineCoreRequest
-        engine_core_request: EngineCoreRequest = self.processor.process_inputs(
-            request_id=str(request.request_id),
-            prompt=llm_prompt,
-            params=request.params,
-        )
+        #     # Perform multimodal processing separately from the core engine
+        #     from vllm.v1.engine import EngineCoreRequest
+        #     engine_core_request: EngineCoreRequest = self.processor.process_inputs(
+        #         request_id=str(request.request_id),
+        #         prompt=llm_prompt,
+        #         params=request.params,
+        #     )
+        engine_core_request = request.engine_core_request
 
         # Send the request to the LLM engine.
         stream = self.engine.generate(
@@ -748,4 +758,5 @@ class vLLMEngineStage(StatefulStage):
             "multimodal_data": "The multimodal data to pass to the model, if the model supports it.",
             "mm_processor_kwargs": "The kwargs for the engine's multimodal processor.",
             "multimodal_uuids": "User-specified UUIDs for multimodal items, mapped by modality.",
+            "engine_core_request": "Pre-assembled engine core request (created in multimodal_processing_stage).",
         }
